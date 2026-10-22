@@ -1,0 +1,38 @@
+{
+  "name": "filecafe",
+  "version": "0.1.0",
+  "description": "Upload files to file.cafe from the command line. Built for AI coding agents, humans, and CI.",
+  "keywords": [
+    "file.cafe",
+    "file-sharing",
+    "upload",
+    "cli",
+    "ai-agents"
+  ],
+  "homepage": "https://file.cafe",
+  "type": "module",
+  "bin": {
+    "filecafe": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "node src/cli.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {
+    "commander": "^14.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsdown": "^0.23.1",
+    "typescript": "^7.0.2"
+  }
+}

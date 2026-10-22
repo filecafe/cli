@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "isolatedModules": true
+  },
+  "include": ["src", "test", "tsdown.config.ts"]
+}
