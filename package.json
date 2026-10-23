@@ -1,6 +1,6 @@
 {
   "name": "filecafe",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Upload files to file.cafe from the command line. Built for AI coding agents, humans, and CI.",
   "keywords": [
     "file.cafe",
