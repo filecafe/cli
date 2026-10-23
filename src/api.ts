@@ -158,6 +158,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       }
 
       let response: Response;
+      let text: string;
 
       try {
         response = await fetch(url, {
@@ -167,6 +168,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           redirect: 'manual',
           signal: AbortSignal.timeout(timeoutMs),
         });
+        text = await response.text();
       } catch (error) {
         if (requestOptions.idempotent && networkRetries < maxNetworkRetries) {
           networkRetries++;
@@ -179,7 +181,6 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get('Location');
-        await response.body?.cancel();
 
         throw new ApiError(
           `${url} redirected to ${location ?? 'another location'}. Check the --url option / FILECAFE_URL (e.g. use https:// instead of http://).`,
@@ -187,7 +188,6 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         );
       }
 
-      const text = await response.text();
       let json: unknown = null;
 
       if (text) {

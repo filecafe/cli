@@ -117,6 +117,28 @@ describe('api client', () => {
     assert.equal(down.calls.length, 1);
   });
 
+  it('retries idempotent requests when the response body fails mid-read', async () => {
+    let attempts = 0;
+    const { api } = client(() => {
+      attempts++;
+
+      if (attempts === 1) {
+        const body = new ReadableStream({
+          pull(controller) {
+            controller.error(new TypeError('terminated', { cause: { code: 'ECONNRESET' } }));
+          },
+        });
+
+        return new Response(body, { status: 200 });
+      }
+
+      return json(200, { data: { id: 'u1' } });
+    });
+
+    assert.deepEqual(await api.request('PUT', '/api/v1/uploads/u1', {}, { idempotent: true }), { id: 'u1' });
+    assert.equal(attempts, 2);
+  });
+
   it('reports non-JSON responses as a likely wrong --url', async () => {
     const { api } = client(() => new Response('<html></html>', { status: 200 }));
 
