@@ -162,13 +162,51 @@ describe('filecafe whoami / logout', () => {
     });
   });
 
-  it('logout deletes the saved token', async () => {
-    const { fetch } = mockFetch(server);
-    const { context, stdout } = await createTestContext(fetch);
+  it('logout revokes the saved token on the server and deletes it', async () => {
+    const { fetch, calls } = mockFetch(() => new Response(null, { status: 204 }));
+    const { context, stdout, stderr } = await createTestContext(fetch);
+    await writeConfig(context, { url: BASE, token: 'saved' });
+
+    assert.equal(await logoutCommand(context), 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.method, 'DELETE');
+    assert.equal(calls[0]?.url, `${BASE}/api/v1/token`);
+    assert.equal(calls[0]?.headers.authorization, 'Bearer saved');
+    assert.equal(await readConfig(context), null);
+    assert.equal(stdout(), `Logged out of ${BASE}.\n`);
+    assert.doesNotMatch(stderr(), /Could not revoke/);
+  });
+
+  it('logout stays quiet when the token was already revoked', async () => {
+    const { fetch } = mockFetch(() => json(401, { message: 'Unauthenticated.' }));
+    const { context, stderr } = await createTestContext(fetch);
+    await writeConfig(context, { url: BASE, token: 'saved' });
+
+    assert.equal(await logoutCommand(context), 0);
+    assert.equal(await readConfig(context), null);
+    assert.doesNotMatch(stderr(), /Could not revoke/);
+  });
+
+  it('logout still deletes the saved token when the server cannot be reached', async () => {
+    const { fetch } = mockFetch(() => {
+      throw new TypeError('fetch failed');
+    });
+    const { context, stdout, stderr } = await createTestContext(fetch);
     await writeConfig(context, { url: BASE, token: 'saved' });
 
     assert.equal(await logoutCommand(context), 0);
     assert.equal(await readConfig(context), null);
     assert.equal(stdout(), `Logged out of ${BASE}.\n`);
+    assert.match(stderr(), /Could not revoke the token on https:\/\/file\.cafe/);
+    assert.match(stderr(), /Settings → API tokens/);
+  });
+
+  it('logout makes no request when nothing is saved', async () => {
+    const { fetch, calls } = mockFetch(server);
+    const { context, stdout } = await createTestContext(fetch);
+
+    assert.equal(await logoutCommand(context), 0);
+    assert.equal(calls.length, 0);
+    assert.equal(stdout(), 'Not logged in; nothing to do.\n');
   });
 });

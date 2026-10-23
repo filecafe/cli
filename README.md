@@ -41,8 +41,12 @@ Other account commands:
 ```sh
 filecafe whoami          # Logged in to https://file.cafe as Ada (ada@example.com)
 filecafe whoami --json   # {"name":"Ada","email":"ada@example.com","url":"https://file.cafe","token_source":"config"}
-filecafe logout          # delete the saved token
+filecafe logout          # revoke the saved token on file.cafe and delete it locally
 ```
+
+Saved logins never expire. They last until you run `filecafe logout` or revoke the token in
+Settings → API tokens on file.cafe. `logout` revokes the token even if you saved it with
+`filecafe login --token`, so don't log out with a token that CI or another machine still uses.
 
 ## Upload
 

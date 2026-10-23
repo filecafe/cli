@@ -1,8 +1,27 @@
+import { ApiError } from '../api.ts';
 import { configPath, deleteConfig, readConfig } from '../config.ts';
 import type { Context } from '../context.ts';
+import { clientFor } from '../session.ts';
 
 export async function logoutCommand(context: Context): Promise<number> {
   const saved = await readConfig(context).catch(() => null);
+
+  if (saved) {
+    try {
+      await clientFor(context, saved.url, saved.token).request<void>('DELETE', '/api/v1/token', undefined, {
+        idempotent: true,
+      });
+    } catch (error) {
+      // A 401 means the token was already revoked, which is the outcome we wanted.
+      if (!(error instanceof ApiError && error.status === 401)) {
+        context.stderr.write(
+          `Could not revoke the token on ${saved.url}: ${(error as Error).message}\n` +
+            `It may still be active; revoke it in Settings → API tokens.\n`,
+        );
+      }
+    }
+  }
+
   const removed = await deleteConfig(context);
 
   if (removed) {

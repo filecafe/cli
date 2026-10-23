@@ -95,7 +95,12 @@ export function createProgram(context: Context): Command {
 
   program
     .command('logout')
-    .description('Delete the saved login token (does not affect FILECAFE_TOKEN)')
+    .description('Revoke the saved login token on file.cafe and delete it from this machine (does not affect FILECAFE_TOKEN)')
+    .addHelpText(
+      'after',
+      '\nThe token is revoked even if it was saved with "filecafe login --token", so don\'t log out\n' +
+        'with a token that CI or another machine still uses.\n',
+    )
     .action(() => execute(context, () => logoutCommand(context)));
 
   program

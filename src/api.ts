@@ -220,6 +220,10 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         throw new ApiError(apiErrorMessage(response.status, json), response.status);
       }
 
+      if (response.status === 204) {
+        return undefined as T;
+      }
+
       if (json && typeof json === 'object' && 'data' in json) {
         return json.data as T;
       }
