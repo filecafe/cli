@@ -27,7 +27,7 @@ Requires Node.js 20 or newer.
 filecafe login
 ```
 
-This opens your browser so you can approve the CLI on file.cafe. The token is saved to `~/.config/filecafe/config.json` (or `$XDG_CONFIG_HOME/filecafe/config.json`; `%APPDATA%\filecafe\config.json` on Windows) with owner-only permissions.
+This shows a one-time code and opens your browser so you can approve the CLI on file.cafe; check that the code on the page matches the one in your terminal. It works over SSH too: if no browser opens, visit the printed URL on any device and enter the code. The token is saved to `~/.config/filecafe/config.json` (or `$XDG_CONFIG_HOME/filecafe/config.json`; `%APPDATA%\filecafe\config.json` on Windows) with owner-only permissions.
 
 Headless machines and CI can use an existing token instead:
 

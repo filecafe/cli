@@ -20,7 +20,8 @@ export class ApiError extends Error {
 
 export interface ApiClientOptions {
   baseUrl: string;
-  token: string;
+  /** Omitted for the endpoints that start and finish a login. */
+  token?: string;
   fetch: FetchLike;
   sleep: (ms: number) => Promise<void>;
   userAgent: string;
@@ -149,7 +150,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     for (;;) {
       const headers: Record<string, string> = {
         Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
+        ...(token && { Authorization: `Bearer ${token}` }),
         'User-Agent': userAgent,
       };
 

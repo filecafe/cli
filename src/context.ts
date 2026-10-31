@@ -18,6 +18,7 @@ export interface Input extends AsyncIterable<string | Buffer> {
 export interface Context extends ConfigEnvironment {
   fetch: FetchLike;
   sleep: (ms: number) => Promise<void>;
+  now: () => number;
   stdout: Output;
   stderr: Output;
   stdin: Input;
@@ -51,6 +52,7 @@ export function createDefaultContext(): Context {
     homedir: homedir(),
     fetch: (input, init) => fetch(input, init),
     sleep: (ms) => delay(ms),
+    now: () => Date.now(),
     stdout: process.stdout,
     stderr: process.stderr,
     stdin: process.stdin,

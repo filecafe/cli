@@ -11,7 +11,7 @@ export interface GlobalOptions {
 export function clientFor(
   context: Context,
   baseUrl: string,
-  token: string,
+  token: string | undefined,
   onNotice?: (message: string) => void,
 ): ApiClient {
   return createApiClient({

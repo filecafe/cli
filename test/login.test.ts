@@ -1,61 +1,137 @@
 import assert from 'node:assert/strict';
 import { stat } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { describe, it } from 'node:test';
-import { loginCommand, authorizeUrl } from '../src/commands/login.ts';
+import { loginCommand } from '../src/commands/login.ts';
 import { configPath, readConfig } from '../src/config.ts';
-import { generateState, handleCallbackRequest, statesMatch } from '../src/login-server.ts';
-import { BASE, createTestContext, json, mockFetch } from './helpers.ts';
+import { BASE, bodyJson, createTestContext, json, mockFetch, text, type RecordedCall } from './helpers.ts';
 
-const STATE = 'a'.repeat(32);
+const STARTED = {
+  device_code: 'secret-device-code',
+  user_code: 'WDJB-MJHT',
+  verification_uri: `${BASE}/cli/device`,
+  verification_uri_complete: `${BASE}/cli/device?code=WDJB-MJHT`,
+  expires_in: 600,
+  interval: 5,
+};
 
-describe('login callback handler', () => {
-  it('accepts GET /callback with the matching state and returns the token', () => {
-    const response = handleCallbackRequest('GET', `/callback?token=1%7Cplain-text-token&state=${STATE}`, STATE);
+const ME = { data: { name: 'Ada', email: 'ada@example.com' } };
 
-    assert.equal(response.status, 200);
-    assert.deepEqual(response.result, { token: '1|plain-text-token' });
-    assert.match(response.body, /<h1>You're logged in to file\.cafe\.<\/h1><p>You can close this tab/);
+/** A file.cafe that answers polls with `statuses` in turn, repeating the last one. */
+function loginServer(...statuses: Array<Response | Record<string, string>>) {
+  let polls = 0;
+
+  return mockFetch((call: RecordedCall) => {
+    if (call.url === `${BASE}/api/v1/cli/logins`) {
+      return json(201, { data: STARTED });
+    }
+
+    if (call.url === `${BASE}/api/v1/cli/logins/token`) {
+      const status = statuses[Math.min(polls++, statuses.length - 1)]!;
+
+      return status instanceof Response ? status : json(200, { data: status });
+    }
+
+    if (call.url === `${BASE}/api/v1/me`) {
+      return json(200, ME);
+    }
+
+    return json(404, { message: 'Not Found.' });
+  });
+}
+
+describe('browser login', () => {
+  it('shows the code, opens the approval page, and saves the token once it is approved', async () => {
+    const { fetch, calls } = loginServer({ status: 'pending' }, { status: 'approved', token: '1|from-browser' });
+    const opened: string[] = [];
+    const { context, stdout, stderr, waits } = await createTestContext(fetch, { openBrowser: (url) => opened.push(url) });
+
+    assert.equal(await loginCommand({}, {}, context), 0);
+
+    assert.equal(calls[0]?.headers.authorization, undefined);
+    assert.deepEqual(await bodyJson(calls[0]?.body), { name: hostname() });
+    assert.deepEqual(await bodyJson(calls[1]?.body), { device_code: 'secret-device-code' });
+    assert.match(stderr(), /Your one-time code: WDJB-MJHT/);
+    assert.match(stderr(), new RegExp(`visit ${BASE}/cli/device and enter the code`));
+    assert.deepEqual(opened, [STARTED.verification_uri_complete]);
+    assert.deepEqual(waits, [5000, 5000]);
+    assert.equal(calls.at(-1)?.headers.authorization, 'Bearer 1|from-browser');
+    assert.equal(stdout(), 'Logged in as Ada (ada@example.com)\n');
+    assert.deepEqual(await readConfig(context), { url: BASE, token: '1|from-browser' });
   });
 
-  it('rejects a mismatched or missing state without concluding the login', () => {
-    const mismatched = handleCallbackRequest('GET', `/callback?token=stolen&state=${'b'.repeat(32)}`, STATE);
-    assert.equal(mismatched.status, 400);
-    assert.equal(mismatched.result, undefined);
+  it('stops when the login is cancelled in the browser', async () => {
+    const { fetch } = loginServer({ status: 'denied' });
+    const { context } = await createTestContext(fetch);
 
-    const shorter = handleCallbackRequest('GET', `/callback?token=stolen&state=${STATE.slice(1)}`, STATE);
-    assert.equal(shorter.result, undefined);
-
-    const missing = handleCallbackRequest('GET', '/callback?token=stolen', STATE);
-    assert.equal(missing.status, 400);
-    assert.equal(missing.result, undefined);
+    await assert.rejects(loginCommand({}, {}, context), /cancelled in the browser/);
+    assert.equal(await readConfig(context), null);
   });
 
-  it('reports access_denied when the user cancels', () => {
-    const response = handleCallbackRequest('GET', `/callback?error=access_denied&state=${STATE}`, STATE);
+  it('stops when file.cafe says the code expired', async () => {
+    const { fetch } = loginServer({ status: 'expired' });
+    const { context } = await createTestContext(fetch);
 
-    assert.deepEqual(response.result, { error: 'access_denied' });
-    assert.match(response.body, /cancelled/i);
+    await assert.rejects(loginCommand({}, {}, context), /code expired/);
   });
 
-  it('ignores other paths and methods', () => {
-    assert.equal(handleCallbackRequest('GET', '/favicon.ico', STATE).status, 404);
-    assert.equal(handleCallbackRequest('POST', `/callback?token=t&state=${STATE}`, STATE).result, undefined);
+  it('gives up once the code has expired without an approval', async () => {
+    const { fetch, calls } = loginServer({ status: 'pending' });
+    const { context } = await createTestContext(fetch);
+
+    await assert.rejects(loginCommand({}, {}, context), /code expired/);
+    assert.equal(calls.filter((call) => call.url.endsWith('/token')).length, 600 / 5);
   });
 
-  it('generates 32-hex-character states and compares them safely', () => {
-    const state = generateState();
+  it('gives up on time even when polls are slow to fail', async () => {
+    let advanceClock = (_ms: number) => {};
+    let polls = 0;
+    const { fetch } = mockFetch((call) => {
+      if (call.url.endsWith('/api/v1/cli/logins')) {
+        return json(201, { data: STARTED });
+      }
 
-    assert.match(state, /^[0-9a-f]{32}$/);
-    assert.ok(statesMatch(state, state));
-    assert.ok(!statesMatch(null, state));
-    assert.ok(!statesMatch(`${state}x`, state));
+      polls++;
+      advanceClock(55_000);
+      throw new TypeError('fetch failed');
+    });
+    const { context, waits } = await createTestContext(fetch);
+    advanceClock = (ms) => waits.push(ms);
+
+    await assert.rejects(loginCommand({}, {}, context), /code expired/);
+    assert.equal(polls, 10);
   });
 
-  it('builds the authorize URL with an encoded device name', () => {
-    assert.equal(
-      authorizeUrl(BASE, 4321, STATE, "Ada's MacBook"),
-      `${BASE}/cli/authorize?port=4321&state=${STATE}&name=Ada's%20MacBook`,
-    );
+  it('keeps polling through network errors and server failures', async () => {
+    let polls = 0;
+    const { fetch } = mockFetch((call) => {
+      if (call.url.endsWith('/api/v1/cli/logins')) {
+        return json(201, { data: STARTED });
+      }
+
+      if (call.url.endsWith('/token')) {
+        polls++;
+
+        if (polls === 1) {
+          throw new TypeError('fetch failed');
+        }
+
+        return polls === 2 ? text(503, 'Service Unavailable') : json(200, { data: { status: 'approved', token: '1|t' } });
+      }
+
+      return json(200, ME);
+    });
+    const { context } = await createTestContext(fetch);
+
+    assert.equal(await loginCommand({}, {}, context), 0);
+    assert.deepEqual(await readConfig(context), { url: BASE, token: '1|t' });
+  });
+
+  it('explains when the server does not support browser login', async () => {
+    const { fetch } = mockFetch(() => json(201, { data: { unexpected: true } }));
+    const { context } = await createTestContext(fetch);
+
+    await assert.rejects(loginCommand({}, {}, context), /Unexpected response/);
   });
 });
 

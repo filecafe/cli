@@ -106,6 +106,8 @@ export async function createTestContext(
     homedir: await tempDir(),
     fetch,
     sleep,
+    // Time only passes while the code under test sleeps.
+    now: () => waits.reduce((total, ms) => total + ms, 0),
     stdout: { write: (chunk: string) => (out += chunk) },
     stderr: { write: (chunk: string) => (err += chunk) },
     stdin: { isTTY: true, async *[Symbol.asyncIterator]() {} },

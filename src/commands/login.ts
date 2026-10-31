@@ -1,15 +1,12 @@
 import { hostname } from 'node:os';
-import { fetchMe } from '../api.ts';
+import { ApiError, fetchMe, type ApiClient } from '../api.ts';
 import { DEFAULT_BASE_URL, configPath, normalizeBaseUrl, writeConfig } from '../config.ts';
 import { CliError, type Context, type Input } from '../context.ts';
-import { generateState, startCallbackServer, LOGIN_TIMEOUT_MS } from '../login-server.ts';
 import { clientFor, type GlobalOptions } from '../session.ts';
 
 export interface LoginOptions {
   token?: string;
   withToken?: boolean;
-  /** Override for tests. */
-  timeoutMs?: number;
 }
 
 export async function readAll(input: Input): Promise<string> {
@@ -22,30 +19,91 @@ export async function readAll(input: Input): Promise<string> {
   return text;
 }
 
-export function authorizeUrl(baseUrl: string, port: number, state: string, name: string): string {
-  return `${baseUrl}/cli/authorize?port=${port}&state=${state}&name=${encodeURIComponent(name)}`;
+interface StartedLogin {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  expires_in: number;
+  interval: number;
 }
 
-async function tokenFromBrowser(context: Context, baseUrl: string, timeoutMs: number): Promise<string> {
-  const state = generateState();
-  const server = await startCallbackServer(state, timeoutMs);
-  const url = authorizeUrl(baseUrl, server.port, state, hostname());
+type LoginStatus = { status: 'pending' | 'denied' | 'expired' } | { status: 'approved'; token: string };
 
-  context.stderr.write(`Opening your browser to log in to ${baseUrl}.\n`);
-  context.stderr.write(`If it does not open, visit this URL on this machine:\n\n  ${url}\n\nWaiting for approval...\n`);
-  context.openBrowser(url);
+const EXPIRED_MESSAGE = 'The login code expired before it was approved. Run "filecafe login" again.';
 
-  const result = await server.result;
-
-  if ('error' in result) {
-    throw new CliError(
-      result.error === 'access_denied'
-        ? 'Login was cancelled in the browser.'
-        : `Login failed in the browser (${result.error}).`,
-    );
+function isStartedLogin(value: unknown): value is StartedLogin {
+  if (!value || typeof value !== 'object') {
+    return false;
   }
 
-  return result.token;
+  const login = value as Record<string, unknown>;
+
+  return (
+    typeof login.device_code === 'string' &&
+    typeof login.user_code === 'string' &&
+    typeof login.verification_uri === 'string' &&
+    typeof login.verification_uri_complete === 'string' &&
+    typeof login.expires_in === 'number' &&
+    typeof login.interval === 'number'
+  );
+}
+
+/**
+ * Ask where the login stands, treating a dropped connection or server hiccup
+ * as "still pending" so one bad poll does not end the login.
+ */
+async function pollLogin(client: ApiClient, deviceCode: string): Promise<LoginStatus> {
+  try {
+    return await client.request<LoginStatus>('POST', '/api/v1/cli/logins/token', { device_code: deviceCode });
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === null || error.status >= 500)) {
+      return { status: 'pending' };
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Start a login on file.cafe, show its code, and poll until it is approved in
+ * the browser. The token only exists once this collects it, and nothing
+ * listens on a local port, so it works over SSH too.
+ */
+async function tokenFromBrowser(context: Context, baseUrl: string): Promise<string> {
+  const client = clientFor(context, baseUrl, undefined, (message) => context.stderr.write(`${message}\n`));
+  const login = await client.request<unknown>('POST', '/api/v1/cli/logins', { name: hostname() });
+
+  if (!isStartedLogin(login)) {
+    throw new CliError(`Unexpected response from ${baseUrl} when starting the login. Check the --url option / FILECAFE_URL.`);
+  }
+
+  context.stderr.write(
+    `Your one-time code: ${login.user_code}\n\n` +
+      `Opening your browser to approve this login. Check that the code there matches.\n` +
+      `If it does not open, visit ${login.verification_uri} and enter the code.\n\n` +
+      'Waiting for approval...\n',
+  );
+  context.openBrowser(login.verification_uri_complete);
+
+  const intervalMs = Math.max(login.interval, 1) * 1000;
+  const deadline = context.now() + login.expires_in * 1000;
+
+  while (context.now() < deadline) {
+    await context.sleep(Math.min(intervalMs, deadline - context.now()));
+    const result = await pollLogin(client, login.device_code);
+
+    switch (result.status) {
+      case 'approved':
+        return result.token;
+      case 'denied':
+        throw new CliError('Login was cancelled in the browser.');
+      case 'expired':
+        throw new CliError(EXPIRED_MESSAGE);
+    }
+  }
+
+  throw new CliError(EXPIRED_MESSAGE);
 }
 
 export async function loginCommand(options: LoginOptions, globals: GlobalOptions, context: Context): Promise<number> {
@@ -72,7 +130,7 @@ export async function loginCommand(options: LoginOptions, globals: GlobalOptions
 
     token = (await readAll(context.stdin)).trim();
   } else {
-    token = await tokenFromBrowser(context, baseUrl, options.timeoutMs ?? LOGIN_TIMEOUT_MS);
+    token = await tokenFromBrowser(context, baseUrl);
   }
 
   if (!token || /\s/.test(token)) {
