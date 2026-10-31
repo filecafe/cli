@@ -95,7 +95,7 @@ describe('update check', () => {
     assert.equal(session.calls[0]?.url, 'https://registry.npmjs.org/filecafe/latest');
     assert.equal(
       session.stderr(),
-      `\nUpdate available for filecafe (${VERSION} → ${NEWER}).\n` +
+      `\nUpdate available for filecafe (v${VERSION} → v${NEWER})\n` +
         `Changelog: https://github.com/filecafe/cli/releases/tag/v${NEWER}\n` +
         '> npm i -g filecafe@latest\n' +
         'Updated filecafe.\n',
@@ -163,8 +163,9 @@ describe('update check', () => {
 
     await startUpdateCheck(session.context)();
 
-    assert.ok(session.stderr().includes(`(\u001B[90m${VERSION}\u001B[39m → \u001B[32m${NEWER}\u001B[39m)`));
-    assert.ok(session.stderr().includes('\u001B[36mhttps://github.com/filecafe/cli/releases/tag/v99.0.0\u001B[39m'));
+    assert.ok(session.stderr().includes(`(\u001B[90mv${VERSION}\u001B[39m → \u001B[32mv${NEWER}\u001B[39m)`));
+    assert.ok(session.stderr().includes('\u001B[36m\u001B[4mhttps://github.com/filecafe/cli/releases/tag/v99.0.0\u001B[24m\u001B[39m'));
+    assert.deepEqual(session.questions, ['\u001B[90m?\u001B[39m \u001B[1mWould you like to upgrade now?\u001B[22m \u001B[90m(Y/n)\u001B[39m ']);
   });
 
   it('reports a failed upgrade with the command to run by hand', async () => {

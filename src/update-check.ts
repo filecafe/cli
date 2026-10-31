@@ -82,8 +82,8 @@ async function offerUpdate(context: Context, version: string | null): Promise<vo
 
   context.stderr.write(
     version
-      ? `\nUpdate available for filecafe (${color.gray(VERSION)} → ${color.green(version)}).\n` +
-          `Changelog: ${color.cyan(`${RELEASES_URL}/v${version}`)}\n`
+      ? `\nUpdate available for filecafe (${color.gray(`v${VERSION}`)} → ${color.green(`v${version}`)})\n` +
+          `Changelog: ${color.cyan.underline(`${RELEASES_URL}/v${version}`)}\n`
       : '\nA newer version of filecafe may be available.\n',
   );
 
@@ -101,7 +101,9 @@ async function offerUpdate(context: Context, version: string | null): Promise<vo
     return;
   }
 
-  if (!(await context.confirm(`Would you like to upgrade now? ${color.gray('(Y/n)')} `))) {
+  const question = `${color.gray('?')} ${color.bold('Would you like to upgrade now?')} ${color.gray('(Y/n)')} `;
+
+  if (!(await context.confirm(question))) {
     return;
   }
 
