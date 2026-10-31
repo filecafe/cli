@@ -3,6 +3,7 @@ import { ApiError, fetchMe, type ApiClient } from '../api.ts';
 import { DEFAULT_BASE_URL, configPath, normalizeBaseUrl, writeConfig } from '../config.ts';
 import { CliError, type Context, type Input } from '../context.ts';
 import { clientFor, type GlobalOptions } from '../session.ts';
+import { hyperlink, startSpinner, supportsHyperlinks } from '../terminal.ts';
 
 export interface LoginOptions {
   token?: string;
@@ -78,32 +79,41 @@ async function tokenFromBrowser(context: Context, baseUrl: string): Promise<stri
     throw new CliError(`Unexpected response from ${baseUrl} when starting the login. Check the --url option / FILECAFE_URL.`);
   }
 
+  // Where the terminal supports it, the address opens the page with the code already filled in.
+  const link = supportsHyperlinks(context.stderr, context.env)
+    ? hyperlink(login.verification_uri, login.verification_uri_complete)
+    : login.verification_uri;
+
   context.stderr.write(
     `Your one-time code: ${login.user_code}\n\n` +
       `Opening your browser to approve this login. Check that the code there matches.\n` +
-      `If it does not open, visit ${login.verification_uri} and enter the code.\n\n` +
-      'Waiting for approval...\n',
+      `If it does not open, visit ${link} and enter the code.\n\n`,
   );
   context.openBrowser(login.verification_uri_complete);
 
+  const spinner = startSpinner(context.stderr, 'Waiting for approval...', context.env, context.platform);
   const intervalMs = Math.max(login.interval, 1) * 1000;
   const deadline = context.now() + login.expires_in * 1000;
 
-  while (context.now() < deadline) {
-    await context.sleep(Math.min(intervalMs, deadline - context.now()));
-    const result = await pollLogin(client, login.device_code);
+  try {
+    while (context.now() < deadline) {
+      await context.sleep(Math.min(intervalMs, deadline - context.now()));
+      const result = await pollLogin(client, login.device_code);
 
-    switch (result.status) {
-      case 'approved':
-        return result.token;
-      case 'denied':
-        throw new CliError('Login was cancelled in the browser.');
-      case 'expired':
-        throw new CliError(EXPIRED_MESSAGE);
+      switch (result.status) {
+        case 'approved':
+          return result.token;
+        case 'denied':
+          throw new CliError('Login was cancelled in the browser.');
+        case 'expired':
+          throw new CliError(EXPIRED_MESSAGE);
+      }
     }
-  }
 
-  throw new CliError(EXPIRED_MESSAGE);
+    throw new CliError(EXPIRED_MESSAGE);
+  } finally {
+    spinner.stop();
+  }
 }
 
 export async function loginCommand(options: LoginOptions, globals: GlobalOptions, context: Context): Promise<number> {
@@ -157,6 +167,8 @@ export async function loginCommand(options: LoginOptions, globals: GlobalOptions
   if (context.env.FILECAFE_TOKEN?.trim()) {
     context.stderr.write('Note: FILECAFE_TOKEN is set in your environment and takes precedence over the saved login.\n');
   }
+
+  context.stderr.write('\nRun "filecafe upload <file>" to share a file.\n');
 
   return 0;
 }

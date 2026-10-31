@@ -60,6 +60,32 @@ describe('browser login', () => {
     assert.deepEqual(await readConfig(context), { url: BASE, token: '1|from-browser' });
   });
 
+  it('links the address to the prefilled page and shows a spinner in a terminal that supports it', async () => {
+    const { fetch } = loginServer({ status: 'approved', token: '1|t' });
+    let err = '';
+    const { context } = await createTestContext(fetch, {
+      env: { TERM_PROGRAM: 'iTerm.app' },
+      stderr: { isTTY: true, write: (chunk: string) => (err += chunk) },
+    });
+
+    await loginCommand({}, {}, context);
+
+    assert.ok(
+      err.includes(`visit \u001B]8;;${STARTED.verification_uri_complete}\u0007${BASE}/cli/device\u001B]8;;\u0007 and enter the code`),
+    );
+    assert.match(err, /\r⠋ Waiting for approval\.\.\.\r\u001B\[2K/);
+    assert.match(err, /\nRun "filecafe upload <file>" to share a file\.\n$/);
+  });
+
+  it('stops the spinner when the login fails', async () => {
+    const { fetch } = loginServer({ status: 'denied' });
+    let err = '';
+    const { context } = await createTestContext(fetch, { stderr: { isTTY: true, write: (chunk: string) => (err += chunk) } });
+
+    await assert.rejects(loginCommand({}, {}, context), /cancelled in the browser/);
+    assert.ok(err.endsWith('\r\u001B[2K'));
+  });
+
   it('stops when the login is cancelled in the browser', async () => {
     const { fetch } = loginServer({ status: 'denied' });
     const { context } = await createTestContext(fetch);
