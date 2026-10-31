@@ -2,7 +2,7 @@
 
 Upload files to [file.cafe](https://file.cafe) from the command line and get share links back.
 
-Built for AI coding agents (Claude Code, Codex, Cursor), humans, and CI: share URLs go to stdout, progress and errors go to stderr, `--json` gives machine-readable results, and nothing ever prompts (except the one-time browser login).
+Built for AI coding agents (Claude Code, Codex, Cursor), humans, and CI: share URLs go to stdout, progress and errors go to stderr, `--json` gives machine-readable results, and nothing ever prompts (except the one-time browser login, and an upgrade offer when you run it yourself in a terminal).
 
 ## Install
 
@@ -20,6 +20,8 @@ filecafe --help
 ```
 
 Requires Node.js 20 or newer.
+
+When you run filecafe in a terminal and a new version is out, it tells you and offers to upgrade it with the package manager you installed it with. It checks npm in the background once a day (retrying on the next run if npm can't be reached), mentions an update at most every three days, and never shows this in CI or when its output is piped (scripts and AI agents). Set `FILECAFE_NO_UPDATE_CHECK=1` or `NO_UPDATE_NOTIFIER=1` to turn it off.
 
 ## Log in
 

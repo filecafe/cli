@@ -21,7 +21,7 @@ Examples:
 Environment:
   FILECAFE_TOKEN   API token; takes precedence over the saved login
   FILECAFE_URL     Site URL (default: https://file.cafe)
-  FILECAFE_NO_UPDATE_CHECK   Set to skip the daily check for a newer version
+  FILECAFE_NO_UPDATE_CHECK   Set to turn off the new-version check (NO_UPDATE_NOTIFIER works too)
 
 Exit codes: 0 on success, 1 on any failure. Errors and progress go to stderr.
 `;

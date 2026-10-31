@@ -1,171 +1,223 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { configPath } from './config.ts';
+import { join, sep } from 'node:path';
 import type { Context } from './context.ts';
+import { CHECK_INTERVAL_MS, fetchLatestVersion, readUpdateCache, updateCachePath, updateUpdateCache, type UpdateCache } from './update-cache.ts';
 import { VERSION } from './version.ts';
 
-const REGISTRY_URL = 'https://registry.npmjs.org/filecafe/latest';
 const RELEASES_URL = 'https://github.com/filecafe/cli/releases/tag';
 
-/** Ask npm at most once a day, even when the registry cannot be reached. */
-export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Mention an update at most every three days, like the Vercel CLI. */
+export const NOTIFY_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
 
-const REQUEST_TIMEOUT_MS = 2000;
+/** How long the command may wait at the end to confirm a cached version is still the latest. */
+const CONFIRM_TIMEOUT_MS = 3000;
 
-interface UpdateCache {
-  checkedAt: number;
-  latest: string | null;
-  /** The newest version the user said no to, so they are only asked once per release. */
-  declined?: string;
-}
+/** How long to wait for the package managers to say where they keep global packages. */
+export const DETECT_TIMEOUT_MS = 3000;
 
-interface Installer {
-  command: string;
-  args: string[];
-  /** Whether running `command` upgrades the copy that is running now. */
-  global: boolean;
-}
+const UNKNOWN_INSTALL =
+  'Could not tell whether npm, pnpm, Yarn, or Bun installed filecafe. Update it with the package manager that installed it.\n';
 
 /**
- * Start looking for a newer release while the command runs. The returned function reports it
- * on stderr once the command's own output is done, and offers to install it when the user is
- * at a terminal and the CLI was installed globally.
+ * Check for a newer release without slowing the command down. The cache is refreshed by a
+ * detached worker; when it already knows of a newer version, npm is asked again while the
+ * command runs so the notice never names a stale version.
  *
- * Nothing is shown in CI, when stderr is piped (scripts and AI agents), or when
- * FILECAFE_NO_UPDATE_CHECK is set.
+ * The returned function reports the update on stderr once the command's own output is done,
+ * and offers to install it when the user is at a terminal. Nothing is shown in CI, when stderr
+ * is piped (scripts and AI agents), or when FILECAFE_NO_UPDATE_CHECK or NO_UPDATE_NOTIFIER is set.
  */
 export function startUpdateCheck(context: Context): () => Promise<void> {
-  if (!context.stderr.isTTY || context.env.CI || context.env.FILECAFE_NO_UPDATE_CHECK) {
+  const { env } = context;
+
+  if (!context.stderr.isTTY || env.CI || env.FILECAFE_NO_UPDATE_CHECK || env.NO_UPDATE_NOTIFIER) {
     return async () => {};
   }
 
-  const path = join(dirname(configPath(context)), 'update-check.json');
-  const check = refreshCache(context, path).catch(() => null);
+  const path = updateCachePath(context);
 
-  return async () => {
-    const cache = await check;
-    const latest = cache?.latest;
+  const pending = (async () => {
+    const cache = await readUpdateCache(path);
 
-    if (!cache || !latest || !isNewer(latest, VERSION)) {
-      return;
+    if (!cache || context.now() >= cache.expireAt) {
+      context.refreshInBackground(path);
     }
 
-    const installer = detectInstaller(context);
-    const command = [installer.command, ...installer.args].join(' ');
-
-    context.stderr.write(
-      `\nUpdate available for filecafe (${VERSION} → ${latest}).\nChangelog: ${RELEASES_URL}/v${latest}\n`,
-    );
-
-    const canAsk = installer.global && context.stdin.isTTY && context.stdout.isTTY && cache.declined !== latest;
-
-    if (!canAsk) {
-      context.stderr.write(`Run: ${command}\n`);
-
-      return;
-    }
-
-    if (!(await context.confirm('Would you like to upgrade now? (Y/n) '))) {
-      context.stderr.write(`Run "${command}" whenever you're ready.\n`);
-      await writeCache(path, { ...cache, declined: latest }).catch(() => {});
-
-      return;
-    }
-
-    context.stderr.write(`> ${command}\n`);
-
-    const exitCode = await context.run(installer.command, installer.args);
-
-    context.stderr.write(
-      exitCode === 0 ? `Updated filecafe to ${latest}.\n` : `The update failed. Run it yourself: ${command}\n`,
-    );
-  };
-}
-
-async function refreshCache(context: Context, path: string): Promise<UpdateCache> {
-  const cache = await readCache(path);
-
-  if (cache && context.now() - cache.checkedAt < CHECK_INTERVAL_MS) {
-    return cache;
-  }
-
-  // Keep the last known version if npm cannot be reached, and don't ask again until tomorrow.
-  const fresh = { ...cache, checkedAt: context.now(), latest: (await fetchLatest(context)) ?? cache?.latest ?? null };
-
-  await writeCache(path, fresh);
-
-  return fresh;
-}
-
-async function readCache(path: string): Promise<UpdateCache | null> {
-  try {
-    const parsed = JSON.parse(await readFile(path, 'utf8')) as Partial<UpdateCache>;
-
-    if (typeof parsed.checkedAt === 'number' && (typeof parsed.latest === 'string' || parsed.latest === null)) {
-      return {
-        checkedAt: parsed.checkedAt,
-        latest: parsed.latest,
-        ...(typeof parsed.declined === 'string' && { declined: parsed.declined }),
-      };
-    }
-  } catch {
-    // Missing or corrupt: check again.
-  }
-
-  return null;
-}
-
-async function writeCache(path: string, cache: UpdateCache): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await writeFile(path, `${JSON.stringify(cache)}\n`);
-}
-
-async function fetchLatest(context: Context): Promise<string | null> {
-  try {
-    const response = await context.fetch(REGISTRY_URL, {
-      headers: { Accept: 'application/json', 'User-Agent': context.userAgent },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-
-    if (!response.ok) {
+    if (!cache?.version || !isNewer(cache.version, VERSION) || context.now() < (cache.notifyAt ?? 0)) {
       return null;
     }
 
-    const { version } = (await response.json()) as { version?: unknown };
+    return { cache, fresh: await fetchLatestVersion(context.fetch, context.userAgent, CONFIRM_TIMEOUT_MS) };
+  })().catch(() => null);
 
-    return typeof version === 'string' && parseVersion(version) ? version : null;
-  } catch {
-    return null;
-  }
+  return async () => {
+    const result = await pending;
+
+    if (!result) {
+      return;
+    }
+
+    const { cache, fresh } = result;
+    const confirmed = fresh ? { version: fresh, expireAt: context.now() + CHECK_INTERVAL_MS } : {};
+    // The background worker may have refreshed the cache while the command ran, so build on that.
+    const save = (change: Partial<UpdateCache>) =>
+      updateUpdateCache(path, (current) => ({ ...(current ?? cache), ...confirmed, ...change })).catch(() => {});
+
+    if (fresh && !isNewer(fresh, VERSION)) {
+      // The cache was stale: this is already the latest version.
+      await save({});
+
+      return;
+    }
+
+    await save({ notifyAt: context.now() + NOTIFY_INTERVAL_MS });
+    await offerUpdate(context, fresh);
+  };
 }
 
+/** Show the notice and, at a terminal, offer to install. `version` is null when npm could not confirm it. */
+async function offerUpdate(context: Context, version: string | null): Promise<void> {
+  context.stderr.write(
+    version
+      ? `\nUpdate available for filecafe (${VERSION} → ${version}).\nChangelog: ${RELEASES_URL}/v${version}\n`
+      : '\nA newer version of filecafe may be available.\n',
+  );
+
+  if (context.env.npm_command === 'exec' || context.scriptPath.replaceAll('\\', '/').includes('/_npx/')) {
+    context.stderr.write('Run: npx filecafe@latest\n');
+
+    return;
+  }
+
+  if (!context.stdin.isTTY || !context.stdout.isTTY) {
+    const installer = await detectInstaller(context);
+
+    context.stderr.write(installer ? `Run: ${installer.join(' ')}\n` : UNKNOWN_INSTALL);
+
+    return;
+  }
+
+  if (!(await context.confirm('Would you like to upgrade now? (Y/n) '))) {
+    return;
+  }
+
+  const installer = await detectInstaller(context);
+
+  if (!installer) {
+    context.stderr.write(UNKNOWN_INSTALL);
+
+    return;
+  }
+
+  const [command, ...args] = installer;
+
+  context.stderr.write(`> ${installer.join(' ')}\n`);
+
+  const exitCode = await context.run(command!, args);
+
+  context.stderr.write(
+    exitCode === 0 ? 'Updated filecafe.\n' : `The update failed. Run it yourself: ${installer.join(' ')}\n`,
+  );
+}
+
+interface PackageManager {
+  install: string[];
+  /** Asks the package manager where it keeps global packages. */
+  detect: string[];
+  /** The global filecafe package folder, from the detect command's output. */
+  packageDir?: (output: string) => string | undefined;
+  /** For managers that report a folder of binaries instead. */
+  binaryDir?: (output: string) => string;
+}
+
+const PACKAGE_MANAGERS: PackageManager[] = [
+  {
+    install: ['npm', 'i', '-g', 'filecafe@latest'],
+    detect: ['npm', 'root', '-g'],
+    packageDir: (root) => join(root, 'filecafe'),
+  },
+  {
+    install: ['pnpm', 'add', '-g', 'filecafe@latest'],
+    detect: ['pnpm', 'list', '-g', 'filecafe', '--depth=0', '--json'],
+    packageDir: (output) => {
+      try {
+        const parsed = JSON.parse(output) as unknown;
+        const project = (Array.isArray(parsed) ? parsed[0] : parsed) as
+          | { dependencies?: { filecafe?: { path?: unknown } } }
+          | undefined;
+        const path = project?.dependencies?.filecafe?.path;
+
+        return typeof path === 'string' ? path : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+  },
+  {
+    install: ['yarn', 'global', 'add', 'filecafe@latest'],
+    detect: ['yarn', '--silent', 'global', 'dir'],
+    packageDir: (root) => join(root, 'node_modules', 'filecafe'),
+  },
+  {
+    install: ['bun', 'add', '-g', 'filecafe@latest'],
+    detect: ['bun', 'pm', 'bin', '-g'],
+    binaryDir: (root) => root,
+  },
+];
+
 /**
- * Work out how the running copy was installed from where it lives, so the upgrade goes through
- * the same package manager instead of leaving a second, older copy on the PATH.
+ * Find the package manager whose global install is the copy running now, by asking each one
+ * (all at once) where it keeps global packages. Returns the command that upgrades it, or null
+ * when none of them owns this copy (a project dependency, a source checkout, or an unusual
+ * setup) or they take longer than `timeoutMs` to answer.
  */
-export function detectInstaller({ env, scriptPath }: Pick<Context, 'env' | 'scriptPath'>): Installer {
-  const path = scriptPath.replaceAll('\\', '/');
+export async function detectInstaller(
+  context: Pick<Context, 'scriptPath' | 'capture' | 'realpath'>,
+  timeoutMs = DETECT_TIMEOUT_MS,
+): Promise<string[] | null> {
+  const installPath = await context.realpath(context.scriptPath);
 
-  if (env.npm_command === 'exec' || path.includes('/_npx/')) {
-    return { command: 'npx', args: ['filecafe@latest'], global: false };
+  if (!installPath) {
+    return null;
   }
 
-  if (path.includes('/pnpm/global/')) {
-    return { command: 'pnpm', args: ['add', '-g', 'filecafe@latest'], global: true };
+  const stop = new AbortController();
+
+  const owns = async (manager: PackageManager): Promise<boolean> => {
+    const [command, ...args] = manager.detect;
+    const output = (await context.capture(command!, args, stop.signal))?.trim();
+
+    if (!output) {
+      return false;
+    }
+
+    const packageDir = manager.packageDir?.(output);
+    const resolvedDir = packageDir && (await context.realpath(packageDir));
+
+    if (resolvedDir && installPath.startsWith(resolvedDir + sep)) {
+      return true;
+    }
+
+    return !!manager.binaryDir && (await context.realpath(join(manager.binaryDir(output), 'filecafe'))) === installPath;
+  };
+
+  let timer: NodeJS.Timeout | undefined;
+
+  try {
+    // The first manager that owns this copy wins; a slow or missing one can't hold up the rest.
+    return await new Promise<string[] | null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+
+      const checks = PACKAGE_MANAGERS.map((manager) =>
+        owns(manager).then((owned) => owned && resolve(manager.install), () => {}),
+      );
+
+      void Promise.all(checks).then(() => resolve(null));
+    });
+  } finally {
+    clearTimeout(timer);
+    // Kill the probes still running so they don't keep the CLI from exiting.
+    stop.abort();
   }
-
-  if (path.includes('/.bun/install/global/')) {
-    return { command: 'bun', args: ['add', '-g', 'filecafe@latest'], global: true };
-  }
-
-  if (path.includes('/yarn/global/')) {
-    return { command: 'yarn', args: ['global', 'add', 'filecafe@latest'], global: true };
-  }
-
-  // npm's global folder: <prefix>/lib/node_modules on macOS and Linux, %APPDATA%\npm\node_modules on Windows.
-  const npmGlobal = /\/lib\/node_modules\/filecafe\//.test(path) || /\/npm\/node_modules\/filecafe\//.test(path);
-
-  return { command: 'npm', args: ['i', '-g', 'filecafe@latest'], global: npmGlobal };
 }
 
 function parseVersion(version: string): [number, number, number] | null {
