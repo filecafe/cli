@@ -168,6 +168,7 @@ export async function uploadCommand(
       } else {
         const filename = uploadFilename(file);
         progress.update(`Uploading ${err.bold(filename)} (${formatBytes(size)})...`);
+        let lastDrawn = -Infinity;
 
         try {
           const completed: CompletedUpload = await uploadFile({
@@ -180,8 +181,15 @@ export async function uploadCommand(
             mimeType: guessMimeType(filename),
             collectionId: options.collection,
             concurrency: options.concurrency,
-            onNotice: notice,
+            now: context.now,
             onProgress: (uploaded, total) => {
+              // Bytes arrive in small chunks; redraw at most every 100 ms, and always at the end.
+              if (uploaded < total && context.now() - lastDrawn < 100) {
+                return;
+              }
+
+              lastDrawn = context.now();
+
               if (uploaded > 0 && total > 0) {
                 const percent = Math.floor((uploaded / total) * 100);
                 progress.update(

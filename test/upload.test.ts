@@ -9,7 +9,7 @@ import {
   createSleep,
   json,
   mockFetch,
-  receiptResponse,
+  stored,
   tempFile,
   text,
   type Handler,
@@ -25,7 +25,6 @@ function singleStart(id = 'upload-1') {
   return json(201, {
     data: {
       id,
-      requires_receipts: true,
       url: `https://upload.file.cafe/${id}`,
       headers: SINGLE_HEADERS,
       thumbnail: null,
@@ -61,14 +60,14 @@ async function setup(handler: Handler, contents: string, name = 'hello.txt') {
 }
 
 describe('single PUT upload', () => {
-  it('starts, PUTs the bytes with exactly the signed headers, and completes with the receipt', async () => {
+  it('starts, PUTs the bytes with exactly the signed headers, and completes the upload', async () => {
     const { calls, options } = await setup((call) => {
       if (call.method === 'POST' && call.url === `${BASE}/api/v1/uploads`) {
         return singleStart();
       }
 
       if (call.method === 'PUT' && call.url === 'https://upload.file.cafe/upload-1') {
-        return receiptResponse('receipt-1');
+        return stored();
       }
 
       if (call.method === 'PUT' && call.url === `${BASE}/api/v1/uploads/upload-1`) {
@@ -100,36 +99,15 @@ describe('single PUT upload', () => {
     });
 
     assert.deepEqual(put?.headers, {
+      'content-length': '11',
       'content-type': 'text/plain',
       'if-none-match': '*',
       'x-upload-token': 'signed-upload-token',
     });
-    assert.ok(put?.body instanceof Blob);
     assert.equal(await bodyText(put?.body), 'hello world');
 
     assert.equal(complete?.headers.authorization, 'Bearer secret-token');
-    assert.deepEqual(await bodyJson(complete?.body), {
-      token: 'completion-token-upload-1',
-      receipts: ['receipt-1'],
-    });
-  });
-
-  it('fails when the upload succeeds without a receipt and does not complete', async () => {
-    const { calls, options } = await setup((call) => {
-      if (call.method === 'POST') {
-        return singleStart();
-      }
-
-      return receiptResponse(null);
-    }, 'hello world');
-
-    await assert.rejects(uploadFile(options), (error: Error) => {
-      assert.ok(error instanceof TransferError);
-      assert.match(error.message, /did not return an upload receipt/);
-
-      return true;
-    });
-    assert.equal(calls.filter((call) => call.url.includes('/api/v1/uploads/')).length, 0);
+    assert.deepEqual(await bodyJson(complete?.body), { token: 'completion-token-upload-1' });
   });
 
   it('does not retry 4xx part responses and surfaces the text message', async () => {
@@ -155,7 +133,7 @@ describe('single PUT upload', () => {
       if (call.url.startsWith('https://upload.file.cafe')) {
         attempts++;
 
-        return attempts < 3 ? text(502, 'The file could not be uploaded. Please try again.') : receiptResponse('receipt-1');
+        return attempts < 3 ? text(502, 'The file could not be uploaded. Please try again.') : stored();
       }
 
       return completed('upload-1', 'hello.txt', 11);
@@ -166,7 +144,30 @@ describe('single PUT upload', () => {
     assert.equal(result.id, 'upload-1');
     assert.equal(attempts, 3);
     assert.deepEqual(waits, [1000, 2000]);
-    assert.deepEqual(await bodyJson(calls.at(-1)?.body), { token: 'completion-token-upload-1', receipts: ['receipt-1'] });
+    assert.deepEqual(await bodyJson(calls.at(-1)?.body), { token: 'completion-token-upload-1' });
+  });
+
+  it('reports progress as bytes are sent and takes back the bytes of a failed attempt', async () => {
+    let attempts = 0;
+    const { options } = await setup(async (call) => {
+      if (call.method === 'POST') {
+        return singleStart();
+      }
+
+      if (call.url.startsWith('https://upload.file.cafe')) {
+        attempts++;
+        await bodyText(call.body);
+
+        return attempts === 1 ? text(502, 'Try again.') : stored();
+      }
+
+      return completed('upload-1', 'hello.txt', 11);
+    }, 'hello world');
+
+    const progress: number[] = [];
+    await uploadFile({ ...options, onProgress: (uploaded) => progress.push(uploaded) });
+
+    assert.deepEqual(progress, [0, 11, 0, 11]);
   });
 
   it('gives up after 3 retries on persistent 5xx', async () => {
@@ -199,7 +200,7 @@ describe('single PUT upload', () => {
           throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } });
         }
 
-        return receiptResponse('receipt-1');
+        return stored();
       }
 
       return completed('upload-1', 'hello.txt', 11);
@@ -209,36 +210,85 @@ describe('single PUT upload', () => {
     assert.equal(attempts, 2);
   });
 
-  it('restarts the upload once when the object exists but its receipt was lost (412)', async () => {
-    let starts = 0;
+  it('treats a 412 on a retry as already stored, because the lost attempt wrote the file', async () => {
+    let attempts = 0;
     const { calls, options } = await setup((call) => {
       if (call.method === 'POST') {
-        starts++;
-
-        return singleStart(`upload-${starts}`);
+        return singleStart();
       }
 
-      if (call.url === 'https://upload.file.cafe/upload-1') {
+      if (call.url.startsWith('https://upload.file.cafe')) {
+        attempts++;
+
+        if (attempts === 1) {
+          throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } });
+        }
+
         return text(412, 'The file already exists.');
       }
 
-      if (call.url === 'https://upload.file.cafe/upload-2') {
-        return receiptResponse('receipt-2');
-      }
-
-      return completed('upload-2', 'hello.txt', 11);
+      return completed('upload-1', 'hello.txt', 11);
     }, 'hello world');
 
     const result = await uploadFile(options);
 
-    assert.equal(starts, 2);
-    assert.equal(result.id, 'upload-2');
-    assert.deepEqual(await bodyJson(calls.at(-1)?.body), { token: 'completion-token-upload-2', receipts: ['receipt-2'] });
+    assert.equal(result.id, 'upload-1');
+    assert.equal(attempts, 2);
+    assert.equal(calls.filter((call) => call.method === 'POST').length, 1);
+  });
+
+  it('fails on a 412 for the first attempt and does not complete', async () => {
+    const { calls, options } = await setup((call) => {
+      if (call.method === 'POST') {
+        return singleStart();
+      }
+
+      return text(412, 'The file already exists.');
+    }, 'hello world');
+
+    await assert.rejects(uploadFile(options), (error: Error) => {
+      assert.ok(error instanceof TransferError);
+      assert.match(error.message, /HTTP 412\): The file already exists\./);
+
+      return true;
+    });
+    assert.equal(calls.filter((call) => call.url.includes('/api/v1/uploads/')).length, 0);
   });
 });
 
+/** A multipart start for `parts` one-byte parts, whose URLs are .../start/<part number>. */
+function multipartStart(parts: number, token: string) {
+  return json(201, {
+    data: {
+      id: 'multi-3',
+      multipart_id: 'mp-3',
+      part_size: 1,
+      parts: Array.from({ length: parts }, (_, i) => ({
+        url: `https://upload.file.cafe/multi-3/start/${i + 1}`,
+        headers: { 'Content-Type': 'text/plain' },
+      })),
+      token,
+    },
+  });
+}
+
+/** What POST /uploads/{id}/parts returns: fresh URLs (.../fresh/<n>) and a renewed ticket. */
+function partsResponse(partNumbers: number[], token: string) {
+  return json(200, {
+    data: {
+      parts: partNumbers.map((partNumber) => ({
+        part_number: partNumber,
+        url: `https://upload.file.cafe/multi-3/fresh/${partNumber}`,
+        headers: { 'Content-Type': 'text/plain' },
+      })),
+      token,
+      expires_at: 0,
+    },
+  });
+}
+
 describe('multipart upload', () => {
-  it('uploads the right slices in parallel and sends receipts in part order', async () => {
+  it('uploads the right slices in parallel and completes once every part is stored', async () => {
     const contents = 'abcdefghij';
     const partSize = 3;
     let inFlight = 0;
@@ -250,7 +300,6 @@ describe('multipart upload', () => {
         return json(201, {
           data: {
             id: 'multi-1',
-            requires_receipts: true,
             multipart_id: 'mp-1',
             part_size: partSize,
             parts: [0, 1, 2, 3].map((index) => ({
@@ -279,7 +328,7 @@ describe('multipart upload', () => {
         await new Promise((resolve) => setTimeout(resolve, (4 - index) * 10));
         inFlight--;
 
-        return receiptResponse(`receipt-${index}`);
+        return stored();
       }
 
       return completed('multi-1', 'hello.txt', contents.length);
@@ -293,11 +342,106 @@ describe('multipart upload', () => {
       ['abc', 'def', 'ghi', 'j'],
     );
     assert.equal(maxInFlight, 2);
-    assert.deepEqual(await bodyJson(calls.at(-1)?.body), {
-      token: 'multi-completion-token',
-      receipts: ['receipt-0', 'receipt-1', 'receipt-2', 'receipt-3'],
-    });
+    assert.deepEqual(await bodyJson(calls.at(-1)?.body), { token: 'multi-completion-token' });
     assert.equal(progress.at(-1), contents.length);
+  });
+
+  it('fetches URLs for later parts in batches of 50 and completes with the latest ticket', async () => {
+    const contents = 'x'.repeat(120);
+    const putUrls: string[] = [];
+    const batches: unknown[] = [];
+
+    const { calls, options } = await setup(async (call) => {
+      if (call.method === 'POST' && call.url === `${BASE}/api/v1/uploads`) {
+        return multipartStart(120, 'start-token');
+      }
+
+      if (call.url === `${BASE}/api/v1/uploads/multi-3/parts`) {
+        const body = (await bodyJson(call.body)) as { token: string; part_numbers: number[] };
+        batches.push(body);
+
+        return partsResponse(body.part_numbers, `parts-token-${batches.length}`);
+      }
+
+      if (call.url.startsWith('https://upload.file.cafe')) {
+        putUrls.push(call.url);
+
+        return stored();
+      }
+
+      return completed('multi-3', 'hello.txt', contents.length);
+    }, contents);
+
+    await uploadFile(options);
+
+    const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+    assert.deepEqual(batches, [
+      { token: 'start-token', part_numbers: range(51, 100) },
+      { token: 'parts-token-1', part_numbers: range(101, 120) },
+    ]);
+    assert.deepEqual(
+      putUrls.filter((url) => url.includes('/start/')).map((url) => Number(url.split('/').pop())).sort((a, b) => a - b),
+      range(1, 50),
+    );
+    assert.equal(putUrls.filter((url) => url.includes('/fresh/')).length, 70);
+    assert.deepEqual(await bodyJson(calls.at(-1)?.body), { token: 'parts-token-2' });
+  });
+
+  it('fetches a batch again once its URLs are an hour old', async () => {
+    let clock = 0;
+    const putUrls: string[] = [];
+    const batches: number[][] = [];
+
+    const { options } = await setup(async (call) => {
+      if (call.method === 'POST' && call.url === `${BASE}/api/v1/uploads`) {
+        return multipartStart(3, 'start-token');
+      }
+
+      if (call.url.endsWith('/parts')) {
+        const body = (await bodyJson(call.body)) as { part_numbers: number[] };
+        batches.push(body.part_numbers);
+
+        return partsResponse(body.part_numbers, 'renewed-token');
+      }
+
+      if (call.url.startsWith('https://upload.file.cafe')) {
+        putUrls.push(call.url);
+        clock += 61 * 60 * 1000;
+
+        return stored();
+      }
+
+      return completed('multi-3', 'hello.txt', 3);
+    }, 'abc');
+
+    await uploadFile({ ...options, concurrency: 1, now: () => clock });
+
+    assert.deepEqual(batches, [
+      [1, 2, 3],
+      [1, 2, 3],
+    ]);
+    assert.deepEqual(putUrls, [
+      'https://upload.file.cafe/multi-3/start/1',
+      'https://upload.file.cafe/multi-3/fresh/2',
+      'https://upload.file.cafe/multi-3/fresh/3',
+    ]);
+  });
+
+  it('stops when file.cafe does not return URLs for every requested part', async () => {
+    const { calls, options } = await setup(async (call) => {
+      if (call.method === 'POST' && call.url === `${BASE}/api/v1/uploads`) {
+        return multipartStart(60, 'start-token');
+      }
+
+      if (call.url.endsWith('/parts')) {
+        return json(200, { data: { parts: [], token: 'renewed-token', expires_at: 0 } });
+      }
+
+      return stored();
+    }, 'x'.repeat(60));
+
+    await assert.rejects(uploadFile(options), /Unexpected response when fetching upload URLs/);
+    assert.equal(calls.filter((call) => call.method === 'PUT' && call.url.startsWith(BASE)).length, 0);
   });
 
   it('stops scheduling parts and does not complete when a part fails', async () => {
@@ -306,7 +450,6 @@ describe('multipart upload', () => {
         return json(201, {
           data: {
             id: 'multi-2',
-            requires_receipts: true,
             multipart_id: 'mp-2',
             part_size: 2,
             parts: [0, 1, 2, 3, 4].map((index) => ({ url: `https://upload.file.cafe/multi-2/${index}`, headers: {} })),
@@ -315,7 +458,7 @@ describe('multipart upload', () => {
         });
       }
 
-      return call.url.endsWith('/0') ? text(400, 'The upload does not match its authorized size or type.') : receiptResponse('r');
+      return call.url.endsWith('/0') ? text(400, 'The upload does not match its authorized size or type.') : stored();
     }, 'abcdefghij');
 
     await assert.rejects(uploadFile({ ...options, concurrency: 1 }), /authorized size or type/);

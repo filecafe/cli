@@ -7,7 +7,7 @@ import { logoutCommand } from '../src/commands/logout.ts';
 import { readConfig, writeConfig } from '../src/config.ts';
 import { guessMimeType } from '../src/mime.ts';
 import { NOT_LOGGED_IN } from '../src/session.ts';
-import { BASE, bodyJson, createTestContext, json, mockFetch, receiptResponse, tempDir, tempFile, type Handler } from './helpers.ts';
+import { BASE, bodyJson, createTestContext, json, mockFetch, stored, tempDir, tempFile, type Handler } from './helpers.ts';
 
 /** A fake server where uploads of files named "bad*" fail validation. */
 const server: Handler = async (call) => {
@@ -21,7 +21,6 @@ const server: Handler = async (call) => {
     return json(201, {
       data: {
         id: `id-${body.filename}`,
-        requires_receipts: true,
         url: `https://upload.file.cafe/${body.filename}`,
         headers: { 'Content-Type': 'text/plain' },
         thumbnail: null,
@@ -33,7 +32,7 @@ const server: Handler = async (call) => {
   }
 
   if (call.method === 'PUT' && call.url.startsWith('https://upload.file.cafe/')) {
-    return receiptResponse(`receipt-${call.url.split('/').pop()}`);
+    return stored();
   }
 
   const match = /\/api\/v1\/uploads\/id-(.+)$/.exec(call.url);

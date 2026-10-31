@@ -43,8 +43,9 @@ export function json(status: number, body: unknown, headers: Record<string, stri
   });
 }
 
-export function receiptResponse(receipt: string | null): Response {
-  return new Response(null, { status: 204, headers: receipt === null ? {} : { 'X-Upload-Receipt': receipt } });
+/** What the upload server answers once it has stored a part. */
+export function stored(): Response {
+  return new Response(null, { status: 204 });
 }
 
 export function text(status: number, message: string): Response {
@@ -52,8 +53,8 @@ export function text(status: number, message: string): Response {
 }
 
 export async function bodyText(body: RequestInit['body']): Promise<string> {
-  if (body instanceof Blob) {
-    return body.text();
+  if (body instanceof Blob || body instanceof ReadableStream) {
+    return new Response(body).text();
   }
 
   return typeof body === 'string' ? body : '';

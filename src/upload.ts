@@ -8,7 +8,6 @@ export interface SignedTarget {
 
 interface StartedUploadBase {
   id: string;
-  requires_receipts?: boolean;
   token: string;
 }
 
@@ -26,14 +25,11 @@ export interface CompletedUpload {
 /** An error while transferring bytes to the upload server. */
 export class TransferError extends Error {
   readonly status: number | null;
-  /** The upload must be started again from scratch (e.g. the receipt for a written object was lost). */
-  readonly restartUpload: boolean;
 
-  constructor(message: string, status: number | null, restartUpload = false) {
+  constructor(message: string, status: number | null) {
     super(message);
     this.name = 'TransferError';
     this.status = status;
-    this.restartUpload = restartUpload;
   }
 }
 
@@ -51,14 +47,23 @@ export interface UploadOptions {
   /** Retries per part for network errors and 5xx responses. */
   maxPartRetries?: number;
   partTimeoutMs?: number;
+  /** Called as bytes are sent, so progress moves during each part rather than after it. */
   onProgress?: (uploadedBytes: number, totalBytes: number) => void;
-  /** Called when an upload is restarted after a lost receipt. */
-  onNotice?: (message: string) => void;
+  now?: () => number;
 }
 
 const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_PART_RETRIES = 3;
 const DEFAULT_PART_TIMEOUT_MS = 15 * 60 * 1000;
+
+/**
+ * Multipart uploads use the start response's URLs for the first batch of parts and fetch each
+ * later batch just before uploading it, so a long upload never sends a part to an expired URL.
+ */
+const PART_URL_BATCH_SIZE = 50;
+
+/** Fetch a batch's URLs again once they are this old. file.cafe signs them for two hours. */
+const PART_URL_MAX_AGE_MS = 60 * 60 * 1000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -142,26 +147,44 @@ interface PutPartOptions {
   maxRetries: number;
   timeoutMs: number;
   signal: AbortSignal;
-  requireReceipt: boolean;
   label: string;
+  /** Called with each chunk's size as it is sent, and with the negative total when an attempt fails. */
+  onBytes?: (bytes: number) => void;
 }
 
-/** PUT one byte range, retrying network errors and 5xx responses. Returns the upload receipt. */
-export async function putPart(target: SignedTarget, body: Blob, options: PutPartOptions): Promise<string | null> {
+/** PUT one byte range, retrying network errors and 5xx responses. */
+export async function putPart(target: SignedTarget, body: Blob, options: PutPartOptions): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     options.signal.throwIfAborted();
+
+    let sent = 0;
+    // Streamed so progress can count bytes as they leave; a failed attempt takes its count back.
+    const counted = body.stream().pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          sent += chunk.byteLength;
+          options.onBytes?.(chunk.byteLength);
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+    const failed = () => options.onBytes?.(-sent);
 
     let response: Response;
 
     try {
-      // Only the signed headers are sent; fetch derives Content-Length from the Blob and never sends Origin.
+      // Only the signed headers plus Content-Length, which a streamed body must state (R2 checks it
+      // against the signature). fetch never sends Origin.
       response = await options.fetch(target.url, {
         method: 'PUT',
-        headers: target.headers,
-        body,
+        headers: { ...target.headers, 'Content-Length': String(body.size) },
+        body: counted,
+        duplex: 'half',
         signal: AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs)]),
       });
     } catch (error) {
+      failed();
+
       if (options.signal.aborted) {
         throw options.signal.reason;
       }
@@ -174,29 +197,18 @@ export async function putPart(target: SignedTarget, body: Blob, options: PutPart
       throw new TransferError(`Upload of ${options.label} failed: network error (${describeFetchError(error)}).`, null);
     }
 
-    if (response.ok) {
+    // Single uploads are signed with If-None-Match: *, so a retry gets 412 when an earlier attempt
+    // stored the file but its response was lost. That means it is uploaded; completing the upload
+    // checks the stored size.
+    if (response.ok || (response.status === 412 && attempt > 0)) {
       await response.body?.cancel();
-      const receipt = response.headers.get('X-Upload-Receipt');
 
-      if (!receipt && options.requireReceipt) {
-        throw new TransferError(
-          `Upload of ${options.label} succeeded but the server did not return an upload receipt.`,
-          response.status,
-        );
-      }
-
-      return receipt;
+      return;
     }
+
+    failed();
 
     const detail = (await response.text().catch(() => '')).trim().slice(0, 500);
-
-    if (response.status === 412) {
-      throw new TransferError(
-        `Upload of ${options.label} failed: the file already exists and its receipt was lost.`,
-        412,
-        true,
-      );
-    }
 
     if (response.status >= 500 && attempt < options.maxRetries) {
       await options.sleep(1000 * 2 ** attempt);
@@ -244,8 +256,18 @@ async function runPool(
   }
 }
 
-async function transferOnce(options: UploadOptions, blob: Blob): Promise<CompletedUpload> {
+/**
+ * Upload one file: start the upload, PUT each part (in parallel for multipart), then complete
+ * it. file.cafe checks the stored file when completing, so nothing else needs to be sent back.
+ */
+export async function uploadFile(options: UploadOptions): Promise<CompletedUpload> {
   const { client, size } = options;
+  const blob = await openAsBlob(options.path);
+
+  if (blob.size !== size) {
+    throw new Error(`${options.path} changed size while uploading. Please retry.`);
+  }
+
   const started = await client.request<StartedUpload>('POST', '/api/v1/uploads', {
     filename: options.filename,
     size,
@@ -254,8 +276,7 @@ async function transferOnce(options: UploadOptions, blob: Blob): Promise<Complet
   });
 
   const { targets, partSize } = planTransfer(started, size);
-  const requireReceipt = started.requires_receipts !== false;
-  const receipts: (string | null)[] = new Array(targets.length).fill(null);
+  const partUrls = createPartUrls(options, started, targets);
   const controller = new AbortController();
   let uploadedBytes = 0;
 
@@ -264,53 +285,85 @@ async function transferOnce(options: UploadOptions, blob: Blob): Promise<Complet
   await runPool(targets.length, options.concurrency ?? DEFAULT_CONCURRENCY, controller, async (index) => {
     const start = index * partSize;
     const end = Math.min(start + partSize, size);
-    const target = targets[index] as SignedTarget;
 
-    receipts[index] = await putPart(target, blob.slice(start, end), {
+    await putPart(await partUrls.target(index), blob.slice(start, end), {
       fetch: options.fetch,
       sleep: options.sleep,
       maxRetries: options.maxPartRetries ?? DEFAULT_PART_RETRIES,
       timeoutMs: options.partTimeoutMs ?? DEFAULT_PART_TIMEOUT_MS,
       signal: controller.signal,
-      requireReceipt,
       label: targets.length > 1 ? `part ${index + 1}/${targets.length}` : options.filename,
+      onBytes: (bytes) => {
+        uploadedBytes += bytes;
+        options.onProgress?.(uploadedBytes, size);
+      },
     });
-
-    uploadedBytes += end - start;
-    options.onProgress?.(uploadedBytes, size);
   });
 
   return client.request<CompletedUpload>(
     'PUT',
     `/api/v1/uploads/${encodeURIComponent(started.id)}`,
-    {
-      token: started.token,
-      receipts: receipts.filter((receipt): receipt is string => receipt !== null),
-    },
+    { token: partUrls.token() },
     { idempotent: true },
   );
 }
 
+interface PartUrlBatch {
+  fetchedAt: number;
+  targets: Promise<SignedTarget[]>;
+}
+
 /**
- * Upload one file: start the upload, PUT each part (in parallel for multipart),
- * then complete it with the receipts in part order.
+ * The URL for each part of an upload, in batches of PART_URL_BATCH_SIZE. The first batch comes
+ * from the start response; later ones, and any batch older than PART_URL_MAX_AGE_MS, are fetched
+ * when a part in them is about to be uploaded. Each fetch also renews the upload ticket, so the
+ * latest token is the one to complete with.
  */
-export async function uploadFile(options: UploadOptions): Promise<CompletedUpload> {
-  const blob = await openAsBlob(options.path);
+function createPartUrls(options: UploadOptions, started: StartedUpload, targets: SignedTarget[]) {
+  const now = options.now ?? Date.now;
+  const batches = new Map<number, PartUrlBatch>([
+    [0, { fetchedAt: now(), targets: Promise.resolve(targets.slice(0, PART_URL_BATCH_SIZE)) }],
+  ]);
+  let token = started.token;
 
-  if (blob.size !== options.size) {
-    throw new Error(`${options.path} changed size while uploading. Please retry.`);
-  }
+  const fetchBatch = async (batch: number): Promise<SignedTarget[]> => {
+    const first = batch * PART_URL_BATCH_SIZE + 1;
+    const partNumbers = Array.from({ length: Math.min(PART_URL_BATCH_SIZE, targets.length - first + 1) }, (_, i) => first + i);
+    const response = await options.client.request<unknown>(
+      'POST',
+      `/api/v1/uploads/${encodeURIComponent(started.id)}/parts`,
+      { token, part_numbers: partNumbers },
+      { idempotent: true },
+    );
+    const parts = isRecord(response) && Array.isArray(response.parts) ? response.parts : [];
+    const fresh = partNumbers.map((partNumber) => parts.find((part) => isRecord(part) && part.part_number === partNumber));
 
-  try {
-    return await transferOnce(options, blob);
-  } catch (error) {
-    if (error instanceof TransferError && error.restartUpload) {
-      options.onNotice?.(`Restarting the upload of ${options.filename}...`);
-
-      return transferOnce(options, blob);
+    if (!isRecord(response) || typeof response.token !== 'string' || !fresh.every(isSignedTarget)) {
+      throw new ApiError('Unexpected response when fetching upload URLs.', null);
     }
 
-    throw error;
-  }
+    token = response.token;
+
+    return fresh.map((part) => ({ url: part.url, headers: part.headers }));
+  };
+
+  return {
+    async target(index: number): Promise<SignedTarget> {
+      // A single PUT has one URL, used straight away.
+      if (!('parts' in started)) {
+        return targets[index] as SignedTarget;
+      }
+
+      const batch = Math.floor(index / PART_URL_BATCH_SIZE);
+      let entry = batches.get(batch);
+
+      if (!entry || now() - entry.fetchedAt > PART_URL_MAX_AGE_MS) {
+        entry = { fetchedAt: now(), targets: fetchBatch(batch) };
+        batches.set(batch, entry);
+      }
+
+      return (await entry.targets)[index % PART_URL_BATCH_SIZE] as SignedTarget;
+    },
+    token: () => token,
+  };
 }
