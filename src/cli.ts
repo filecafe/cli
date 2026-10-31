@@ -7,6 +7,7 @@ import { uploadCommand } from './commands/upload.ts';
 import { whoamiCommand } from './commands/whoami.ts';
 import { CliError, createDefaultContext, type Context } from './context.ts';
 import type { GlobalOptions } from './session.ts';
+import { startUpdateCheck } from './update-check.ts';
 import { VERSION } from './version.ts';
 
 const MAIN_EXAMPLES = `
@@ -20,6 +21,7 @@ Examples:
 Environment:
   FILECAFE_TOKEN   API token; takes precedence over the saved login
   FILECAFE_URL     Site URL (default: https://file.cafe)
+  FILECAFE_NO_UPDATE_CHECK   Set to skip the daily check for a newer version
 
 Exit codes: 0 on success, 1 on any failure. Errors and progress go to stderr.
 `;
@@ -50,7 +52,9 @@ Examples:
 In CI you can skip login entirely and set FILECAFE_TOKEN instead.
 `;
 
-async function execute(context: Context, action: () => Promise<number>): Promise<void> {
+async function execute(context: Context, action: () => Promise<number>, { quiet = false } = {}): Promise<void> {
+  const printUpdateNotice = quiet ? async () => {} : startUpdateCheck(context);
+
   try {
     process.exitCode = await action();
   } catch (error) {
@@ -67,6 +71,8 @@ async function execute(context: Context, action: () => Promise<number>): Promise
 
     process.exitCode = 1;
   }
+
+  await printUpdateNotice();
 }
 
 export function createProgram(context: Context): Command {
@@ -121,7 +127,7 @@ export function createProgram(context: Context): Command {
     .option('-q, --quiet', 'no progress or notices on stderr (errors are still printed)')
     .addHelpText('after', UPLOAD_EXAMPLES)
     .action((files: string[], options: { collection?: string; json?: boolean; quiet?: boolean }, command: Command) =>
-      execute(context, () => uploadCommand(files, options, globals(command), context)),
+      execute(context, () => uploadCommand(files, options, globals(command), context), { quiet: options.quiet }),
     );
 
   return program;

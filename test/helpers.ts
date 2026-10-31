@@ -112,6 +112,9 @@ export async function createTestContext(
     stderr: { write: (chunk: string) => (err += chunk) },
     stdin: { isTTY: true, async *[Symbol.asyncIterator]() {} },
     openBrowser: () => {},
+    confirm: async () => false,
+    run: async () => 0,
+    scriptPath: '/usr/local/lib/node_modules/filecafe/dist/cli.js',
     userAgent: 'filecafe-cli/test',
     ...overrides,
   };
