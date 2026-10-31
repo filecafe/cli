@@ -99,6 +99,8 @@ A saved token is only ever sent to the site it was issued for. To work against a
 
 Set `FILECAFE_DEBUG=1` to print stack traces for unexpected errors.
 
+Output is only colored in a terminal, never when piped. Set `NO_COLOR=1` to turn colors off, or `FORCE_COLOR=1` to keep them when piping.
+
 ## Using file.cafe with AI agents
 
 Paste this into your project's `CLAUDE.md`, `AGENTS.md`, or Cursor rules:

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { hyperlink, startSpinner, supportsHyperlinks } from '../src/terminal.ts';
+import { colorsFor, hyperlink, startSpinner, supportsHyperlinks } from '../src/terminal.ts';
 
 const tty = { isTTY: true, write: () => true };
 
@@ -26,10 +26,27 @@ describe('supportsHyperlinks', () => {
   });
 });
 
+describe('colorsFor', () => {
+  const red = (stream: { isTTY?: boolean; write: () => boolean }, env: Record<string, string>) => colorsFor(stream, env).red('x');
+
+  it('colors terminal output only', () => {
+    assert.equal(red(tty, {}), '\u001B[31mx\u001B[39m');
+    assert.equal(red({ write: () => true }, {}), 'x');
+    assert.equal(red(tty, { TERM: 'dumb' }), 'x');
+  });
+
+  it('respects NO_COLOR, and FORCE_COLOR over everything', () => {
+    assert.equal(red(tty, { NO_COLOR: '1' }), 'x');
+    assert.equal(red({ write: () => true }, { FORCE_COLOR: '1' }), '\u001B[31mx\u001B[39m');
+    assert.equal(red(tty, { NO_COLOR: '1', FORCE_COLOR: '1' }), '\u001B[31mx\u001B[39m');
+    assert.equal(red(tty, { FORCE_COLOR: '0' }), 'x');
+  });
+});
+
 describe('startSpinner', () => {
   it('writes a plain line when not on a terminal', () => {
     let out = '';
-    const spinner = startSpinner({ write: (chunk: string) => (out += chunk) }, 'Waiting...', {}, 'linux');
+    const spinner = startSpinner({ write: (chunk: string) => (out += chunk) }, 'Waiting...', { NO_COLOR: '1' }, 'linux');
 
     spinner.stop();
 
@@ -38,7 +55,7 @@ describe('startSpinner', () => {
 
   it('animates on a terminal and erases its line when stopped', () => {
     let out = '';
-    const spinner = startSpinner({ isTTY: true, write: (chunk: string) => (out += chunk) }, 'Waiting...', {}, 'linux');
+    const spinner = startSpinner({ isTTY: true, write: (chunk: string) => (out += chunk) }, 'Waiting...', { NO_COLOR: '1' }, 'linux');
 
     spinner.stop();
     spinner.stop();
@@ -48,7 +65,7 @@ describe('startSpinner', () => {
 
   it('uses ASCII frames in the old Windows console', () => {
     let out = '';
-    startSpinner({ isTTY: true, write: (chunk: string) => (out += chunk) }, 'Waiting...', {}, 'win32').stop();
+    startSpinner({ isTTY: true, write: (chunk: string) => (out += chunk) }, 'Waiting...', { NO_COLOR: '1' }, 'win32').stop();
 
     assert.match(out, /^\r- Waiting\.\.\./);
   });

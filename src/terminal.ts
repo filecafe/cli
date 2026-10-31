@@ -1,6 +1,23 @@
+import { Chalk, type ChalkInstance } from 'chalk';
 import type { Output } from './context.ts';
 
 type Env = Record<string, string | undefined>;
+
+/**
+ * Colors for text written to `stream`: on for a terminal, off when piped (scripts, CI logs,
+ * AI agents) or when NO_COLOR is set. FORCE_COLOR=1 or 0 overrides both.
+ */
+export function colorsFor(stream: Output, env: Env): ChalkInstance {
+  return new Chalk({ level: useColor(stream, env) ? 1 : 0 });
+}
+
+function useColor(stream: Output, env: Env): boolean {
+  if (env.FORCE_COLOR !== undefined) {
+    return env.FORCE_COLOR !== '0' && env.FORCE_COLOR !== 'false';
+  }
+
+  return !env.NO_COLOR && Boolean(stream.isTTY) && env.TERM !== 'dumb';
+}
 
 /**
  * Whether `stream` is a terminal that understands OSC 8 hyperlinks (link text that opens a
@@ -53,8 +70,9 @@ export function startSpinner(stream: Output, text: string, env: Env, platform: N
 
   // The old Windows console can't draw braille; Windows Terminal (WT_SESSION) can.
   const frames = platform === 'win32' && !env.WT_SESSION ? ASCII_FRAMES : FRAMES;
+  const color = colorsFor(stream, env);
   let frame = 0;
-  const draw = () => stream.write(`\r${frames[frame++ % frames.length]} ${text}`);
+  const draw = () => stream.write(`\r${color.cyan(frames[frame++ % frames.length])} ${text}`);
 
   draw();
 

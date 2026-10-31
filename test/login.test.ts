@@ -64,7 +64,7 @@ describe('browser login', () => {
     const { fetch } = loginServer({ status: 'approved', token: '1|t' });
     let err = '';
     const { context } = await createTestContext(fetch, {
-      env: { TERM_PROGRAM: 'iTerm.app' },
+      env: { TERM_PROGRAM: 'iTerm.app', NO_COLOR: '1' },
       stderr: { isTTY: true, write: (chunk: string) => (err += chunk) },
     });
 

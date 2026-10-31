@@ -4,6 +4,7 @@ import { ApiError } from '../api.ts';
 import { CliError, type Context } from '../context.ts';
 import { guessMimeType } from '../mime.ts';
 import { requireSession, type GlobalOptions } from '../session.ts';
+import { colorsFor } from '../terminal.ts';
 import { uploadFile, type CompletedUpload } from '../upload.ts';
 
 export interface UploadCommandOptions {
@@ -131,6 +132,8 @@ export async function uploadCommand(
   }
 
   const showProgress = Boolean(context.stderr.isTTY) && !options.json && !options.quiet;
+  // Share URLs on stdout are never colored, so piping or copying them stays clean.
+  const err = colorsFor(context.stderr, context.env);
   const progress = createProgress(context, showProgress);
   const notice = (message: string) => {
     if (!options.quiet) {
@@ -164,7 +167,7 @@ export async function uploadCommand(
         result = { file, ok: false, error: fatal };
       } else {
         const filename = uploadFilename(file);
-        progress.update(`Uploading ${filename} (${formatBytes(size)})...`);
+        progress.update(`Uploading ${err.bold(filename)} (${formatBytes(size)})...`);
 
         try {
           const completed: CompletedUpload = await uploadFile({
@@ -181,7 +184,9 @@ export async function uploadCommand(
             onProgress: (uploaded, total) => {
               if (uploaded > 0 && total > 0) {
                 const percent = Math.floor((uploaded / total) * 100);
-                progress.update(`Uploading ${filename}  ${percent}% (${formatBytes(uploaded)} / ${formatBytes(total)})`);
+                progress.update(
+                  `Uploading ${err.bold(filename)}  ${err.cyan(`${percent}%`)} (${formatBytes(uploaded)} / ${formatBytes(total)})`,
+                );
               }
             },
           });
@@ -213,9 +218,11 @@ export async function uploadCommand(
         if (result.ok && result.url) {
           context.stdout.write(`${result.url}\n`);
         } else if (result.ok) {
-          context.stderr.write(`${file}: uploaded (id ${result.id}), but the server returned no share link.\n`);
+          context.stderr.write(
+            `${err.yellow(`${file}:`)} uploaded (id ${result.id}), but the server returned no share link.\n`,
+          );
         } else {
-          context.stderr.write(`${file}: ${result.error}\n`);
+          context.stderr.write(`${err.red(`${file}:`)} ${result.error}\n`);
         }
       }
     }
@@ -225,10 +232,10 @@ export async function uploadCommand(
     context.stdout.write(`${JSON.stringify(results, null, 2)}\n`);
   } else if (invalid.length > 0) {
     for (const entry of invalid) {
-      context.stderr.write(`${entry.file}: ${entry.error}\n`);
+      context.stderr.write(`${err.red(`${entry.file}:`)} ${entry.error}\n`);
     }
 
-    context.stderr.write('Nothing was uploaded.\n');
+    context.stderr.write(`${err.red('Nothing was uploaded.')}\n`);
   }
 
   return results.every((result) => result.ok) ? 0 : 1;

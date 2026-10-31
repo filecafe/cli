@@ -1,5 +1,6 @@
 import { join, sep } from 'node:path';
 import type { Context } from './context.ts';
+import { colorsFor } from './terminal.ts';
 import { CHECK_INTERVAL_MS, fetchLatestVersion, readUpdateCache, updateCachePath, updateUpdateCache, type UpdateCache } from './update-cache.ts';
 import { VERSION } from './version.ts';
 
@@ -76,14 +77,18 @@ export function startUpdateCheck(context: Context): () => Promise<void> {
 
 /** Show the notice and, at a terminal, offer to install. `version` is null when npm could not confirm it. */
 async function offerUpdate(context: Context, version: string | null): Promise<void> {
+  const color = colorsFor(context.stderr, context.env);
+  const run = (command: string) => color.cyan(command);
+
   context.stderr.write(
     version
-      ? `\nUpdate available for filecafe (${VERSION} → ${version}).\nChangelog: ${RELEASES_URL}/v${version}\n`
+      ? `\nUpdate available for filecafe (${color.gray(VERSION)} → ${color.green(version)}).\n` +
+          `Changelog: ${color.cyan(`${RELEASES_URL}/v${version}`)}\n`
       : '\nA newer version of filecafe may be available.\n',
   );
 
   if (context.env.npm_command === 'exec' || context.scriptPath.replaceAll('\\', '/').includes('/_npx/')) {
-    context.stderr.write('Run: npx filecafe@latest\n');
+    context.stderr.write(`Run: ${run('npx filecafe@latest')}\n`);
 
     return;
   }
@@ -91,12 +96,12 @@ async function offerUpdate(context: Context, version: string | null): Promise<vo
   if (!context.stdin.isTTY || !context.stdout.isTTY) {
     const installer = await detectInstaller(context);
 
-    context.stderr.write(installer ? `Run: ${installer.join(' ')}\n` : UNKNOWN_INSTALL);
+    context.stderr.write(installer ? `Run: ${run(installer.join(' '))}\n` : UNKNOWN_INSTALL);
 
     return;
   }
 
-  if (!(await context.confirm('Would you like to upgrade now? (Y/n) '))) {
+  if (!(await context.confirm(`Would you like to upgrade now? ${color.gray('(Y/n)')} `))) {
     return;
   }
 
@@ -110,12 +115,14 @@ async function offerUpdate(context: Context, version: string | null): Promise<vo
 
   const [command, ...args] = installer;
 
-  context.stderr.write(`> ${installer.join(' ')}\n`);
+  context.stderr.write(`${color.gray(`> ${installer.join(' ')}`)}\n`);
 
   const exitCode = await context.run(command!, args);
 
   context.stderr.write(
-    exitCode === 0 ? 'Updated filecafe.\n' : `The update failed. Run it yourself: ${installer.join(' ')}\n`,
+    exitCode === 0
+      ? `${color.green('Updated filecafe.')}\n`
+      : `${color.red('The update failed.')} Run it yourself: ${run(installer.join(' '))}\n`,
   );
 }
 

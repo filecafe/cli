@@ -7,6 +7,7 @@ import { uploadCommand } from './commands/upload.ts';
 import { whoamiCommand } from './commands/whoami.ts';
 import { CliError, createDefaultContext, type Context } from './context.ts';
 import type { GlobalOptions } from './session.ts';
+import { colorsFor } from './terminal.ts';
 import { startUpdateCheck } from './update-check.ts';
 import { VERSION } from './version.ts';
 
@@ -58,12 +59,11 @@ async function execute(context: Context, action: () => Promise<number>, { quiet 
   try {
     process.exitCode = await action();
   } catch (error) {
-    const message =
-      error instanceof CliError || error instanceof ApiError
-        ? error.message
-        : `Unexpected error: ${error instanceof Error ? error.message : String(error)}`;
+    const expected = error instanceof CliError || error instanceof ApiError;
+    const label = expected ? 'Error:' : 'Unexpected error:';
+    const message = error instanceof Error ? error.message : String(error);
 
-    context.stderr.write(`${message}\n`);
+    context.stderr.write(`${colorsFor(context.stderr, context.env).red(label)} ${message}\n`);
 
     if (context.env.FILECAFE_DEBUG && error instanceof Error && error.stack) {
       context.stderr.write(`${error.stack}\n`);

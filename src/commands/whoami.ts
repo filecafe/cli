@@ -1,6 +1,7 @@
 import { fetchMe } from '../api.ts';
 import { CliError, type Context } from '../context.ts';
 import { requireSession, type GlobalOptions } from '../session.ts';
+import { colorsFor } from '../terminal.ts';
 
 export interface WhoamiOptions {
   json?: boolean;
@@ -22,10 +23,12 @@ export async function whoamiCommand(options: WhoamiOptions, globals: GlobalOptio
       `${JSON.stringify({ name: me.name, email: me.email, url: settings.baseUrl, token_source: settings.tokenSource })}\n`,
     );
   } else {
-    context.stdout.write(`Logged in to ${settings.baseUrl} as ${me.name} (${me.email})\n`);
+    const out = colorsFor(context.stdout, context.env);
+
+    context.stdout.write(`Logged in to ${settings.baseUrl} as ${out.bold(me.name)} (${me.email})\n`);
 
     if (settings.tokenSource === 'env') {
-      context.stderr.write('(using FILECAFE_TOKEN)\n');
+      context.stderr.write(`${colorsFor(context.stderr, context.env).gray('(using FILECAFE_TOKEN)')}\n`);
     }
   }
 

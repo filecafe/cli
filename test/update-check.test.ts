@@ -44,6 +44,8 @@ async function terminal(cached: Partial<UpdateCache> | null, registry: () => Res
     refreshInBackground: (path) => refreshes.push(path),
     scriptPath: NPM_GLOBAL,
     ...overrides,
+    // Exact-text assertions; colors are covered by their own test.
+    env: { NO_COLOR: '1', ...overrides.env },
   });
 
   const cachePath = updateCachePath(test.context);
@@ -154,6 +156,15 @@ describe('update check', () => {
       version: NEWER,
       notifyAt: NOW + NOTIFY_INTERVAL_MS,
     });
+  });
+
+  it('colors the versions and the link in a terminal', async () => {
+    const session = await terminal({}, latest(NEWER), { env: { FORCE_COLOR: '1' } });
+
+    await startUpdateCheck(session.context)();
+
+    assert.ok(session.stderr().includes(`(\u001B[90m${VERSION}\u001B[39m → \u001B[32m${NEWER}\u001B[39m)`));
+    assert.ok(session.stderr().includes('\u001B[36mhttps://github.com/filecafe/cli/releases/tag/v99.0.0\u001B[39m'));
   });
 
   it('reports a failed upgrade with the command to run by hand', async () => {

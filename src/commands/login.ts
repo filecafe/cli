@@ -3,7 +3,7 @@ import { ApiError, fetchMe, type ApiClient } from '../api.ts';
 import { DEFAULT_BASE_URL, configPath, normalizeBaseUrl, writeConfig } from '../config.ts';
 import { CliError, type Context, type Input } from '../context.ts';
 import { clientFor, type GlobalOptions } from '../session.ts';
-import { hyperlink, startSpinner, supportsHyperlinks } from '../terminal.ts';
+import { colorsFor, hyperlink, startSpinner, supportsHyperlinks } from '../terminal.ts';
 
 export interface LoginOptions {
   token?: string;
@@ -80,12 +80,15 @@ async function tokenFromBrowser(context: Context, baseUrl: string): Promise<stri
   }
 
   // Where the terminal supports it, the address opens the page with the code already filled in.
-  const link = supportsHyperlinks(context.stderr, context.env)
-    ? hyperlink(login.verification_uri, login.verification_uri_complete)
-    : login.verification_uri;
+  const color = colorsFor(context.stderr, context.env);
+  const link = color.cyan(
+    supportsHyperlinks(context.stderr, context.env)
+      ? hyperlink(login.verification_uri, login.verification_uri_complete)
+      : login.verification_uri,
+  );
 
   context.stderr.write(
-    `Your one-time code: ${login.user_code}\n\n` +
+    `Your one-time code: ${color.bold(login.user_code)}\n\n` +
       `Opening your browser to approve this login. Check that the code there matches.\n` +
       `If it does not open, visit ${link} and enter the code.\n\n`,
   );
@@ -161,14 +164,22 @@ export async function loginCommand(options: LoginOptions, globals: GlobalOptions
 
   await writeConfig(context, { url: baseUrl, token });
 
-  context.stdout.write(`Logged in as ${me.name} (${me.email})\n`);
-  context.stderr.write(`Saved credentials for ${baseUrl} to ${configPath(context)}\n`);
+  const out = colorsFor(context.stdout, context.env);
+  const err = colorsFor(context.stderr, context.env);
+
+  context.stdout.write(`${out.green('Logged in')} as ${out.bold(me.name)} (${me.email})\n`);
+  context.stderr.write(`${err.gray(`Saved credentials for ${baseUrl} to ${configPath(context)}`)}\n`);
 
   if (context.env.FILECAFE_TOKEN?.trim()) {
-    context.stderr.write('Note: FILECAFE_TOKEN is set in your environment and takes precedence over the saved login.\n');
+    context.stderr.write(
+      `${err.yellow('Note:')} FILECAFE_TOKEN is set in your environment and takes precedence over the saved login.\n`,
+    );
   }
 
-  context.stderr.write('\nRun "filecafe upload <file>" to share a file.\n');
+  // Quoted in plain text; colored instead in a terminal.
+  const next = err.level > 0 ? err.cyan('filecafe upload <file>') : '"filecafe upload <file>"';
+
+  context.stderr.write(`\nRun ${next} to share a file.\n`);
 
   return 0;
 }
