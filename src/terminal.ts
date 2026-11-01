@@ -49,6 +49,16 @@ export function hyperlink(text: string, url: string): string {
   return `\u001B]8;;${url}\u0007${text}\u001B]8;;\u0007`;
 }
 
+/**
+ * A URL styled like the Vercel CLI's links: cyan and clickable where the terminal supports
+ * links (which usually underline it themselves), otherwise cyan and underlined.
+ */
+export function styledUrl(stream: Output, env: Env, url: string): string {
+  const color = colorsFor(stream, env);
+
+  return supportsHyperlinks(stream, env) ? hyperlink(color.cyan(url), url) : color.cyan.underline(url);
+}
+
 export interface Spinner {
   /** Erase the spinner line. Safe to call more than once. */
   stop(): void;

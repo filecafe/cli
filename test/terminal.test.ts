@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { colorsFor, hyperlink, startSpinner, supportsHyperlinks } from '../src/terminal.ts';
+import { colorsFor, hyperlink, startSpinner, styledUrl, supportsHyperlinks } from '../src/terminal.ts';
 
 const tty = { isTTY: true, write: () => true };
 
@@ -40,6 +40,19 @@ describe('colorsFor', () => {
     assert.equal(red({ write: () => true }, { FORCE_COLOR: '1' }), '\u001B[31mx\u001B[39m');
     assert.equal(red(tty, { NO_COLOR: '1', FORCE_COLOR: '1' }), '\u001B[31mx\u001B[39m');
     assert.equal(red(tty, { FORCE_COLOR: '0' }), 'x');
+  });
+});
+
+describe('styledUrl', () => {
+  const url = 'https://file.cafe/x';
+
+  it('is a cyan link where the terminal supports links, like the Vercel CLI', () => {
+    assert.equal(styledUrl(tty, { TERM_PROGRAM: 'iTerm.app' }, url), `\u001B]8;;${url}\u0007\u001B[36m${url}\u001B[39m\u001B]8;;\u0007`);
+  });
+
+  it('is cyan and underlined where links are not supported, and plain when piped', () => {
+    assert.equal(styledUrl(tty, {}, url), `\u001B[36m\u001B[4m${url}\u001B[24m\u001B[39m`);
+    assert.equal(styledUrl({ write: () => true }, {}, url), url);
   });
 });
 

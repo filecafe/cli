@@ -53,13 +53,24 @@ Settings → API tokens on file.cafe. `logout` revokes the token even if you sav
 ## Upload
 
 ```sh
-filecafe upload screenshot.png                 # prints the share URL
-filecafe upload a.png b.mp4 notes.txt          # one URL per line, in order
-filecafe upload build.zip | pbcopy             # copy the link to the clipboard
+filecafe upload screenshot.png                 # shows the share URL, size and expiry date
+filecafe upload a.png b.mp4 notes.txt          # one summary per file, in order
+filecafe upload build.zip | pbcopy             # piped: just the link, copied to the clipboard
 filecafe upload video.mp4 --collection <uuid>  # add to a collection
 filecafe upload report.pdf --json              # machine-readable output
 filecafe upload big.mov --quiet                # no progress output
 ```
+
+In a terminal each upload ends with a summary:
+
+```
+Successfully uploaded screenshot.png
+URL:     https://file.cafe/9e54VITGmPY.png
+Size:    1.2 MB
+Expires: November 7th 2026
+```
+
+When the output is piped (scripts, CI, AI agents) or with `--quiet`, stdout is just the share URLs, one per line.
 
 Files are uploaded one after another; large files (over 64 MiB) are split into parts that upload in parallel. Every input is checked before anything is uploaded: if any path is missing or is not a regular file, nothing is uploaded.
 
@@ -76,7 +87,8 @@ A single JSON array on stdout with one object per input file, in the order given
     "filename": "report.pdf",
     "size": 482113,
     "url": "https://file.cafe/...",
-    "password_protected": false
+    "password_protected": false,
+    "expires_at": "2026-11-07T12:00:00+00:00"
   },
   {
     "file": "missing.png",
@@ -85,6 +97,8 @@ A single JSON array on stdout with one object per input file, in the order given
   }
 ]
 ```
+
+`expires_at` is `null` for files that never expire.
 
 The exit code is `0` if every file uploaded and `1` if any failed.
 

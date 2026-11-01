@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { uploadCommand, uploadFilename } from '../src/commands/upload.ts';
+import { formatExpiry, uploadCommand, uploadFilename } from '../src/commands/upload.ts';
 import { whoamiCommand } from '../src/commands/whoami.ts';
 import { logoutCommand } from '../src/commands/logout.ts';
 import { readConfig, writeConfig } from '../src/config.ts';
@@ -41,7 +41,15 @@ const server: Handler = async (call) => {
     const filename = decodeURIComponent(match[1] ?? '');
 
     return json(201, {
-      data: { id: `id-${filename}`, filename, password_protected: false, size: 5, url: `${BASE}/f/${filename}` },
+      data: {
+        id: `id-${filename}`,
+        filename,
+        password_protected: false,
+        size: 5,
+        // Midday UTC, so it is the same date in every time zone the tests run in.
+        expires_at: filename.startsWith('forever') ? null : '2026-11-07T12:00:00+00:00',
+        url: `${BASE}/f/${filename}`,
+      },
     });
   }
 
@@ -67,6 +75,7 @@ describe('filecafe upload', () => {
         size: 5,
         url: `${BASE}/f/good.txt`,
         password_protected: false,
+        expires_at: '2026-11-07T12:00:00+00:00',
       },
       { file: bad, ok: false, error: 'This file type is not allowed.' },
     ]);
@@ -81,6 +90,49 @@ describe('filecafe upload', () => {
 
     assert.equal(await uploadCommand([first, second], {}, {}, context), 0);
     assert.equal(stdout(), `${BASE}/f/one.txt\n${BASE}/f/two.txt\n`);
+  });
+
+  it('shows a summary per file in a terminal, and bare URLs with --quiet', async () => {
+    const { fetch } = mockFetch(server);
+    let out = '';
+    const { context } = await createTestContext(fetch, {
+      env: { FILECAFE_TOKEN: 'env-token', NO_COLOR: '1' },
+      stdout: { isTTY: true, write: (chunk: string) => (out += chunk) },
+    });
+    const first = await tempFile('one.txt', 'hello');
+    const second = await tempFile('forever.txt', 'world');
+
+    assert.equal(await uploadCommand([first, second], {}, {}, context), 0);
+    assert.equal(
+      out,
+      'Successfully uploaded one.txt\n' +
+        `URL:     ${BASE}/f/one.txt\n` +
+        'Size:    5 B\n' +
+        'Expires: November 7th 2026\n' +
+        '\n' +
+        'Successfully uploaded forever.txt\n' +
+        `URL:     ${BASE}/f/forever.txt\n` +
+        'Size:    5 B\n' +
+        'Expires: Never\n',
+    );
+
+    out = '';
+    await uploadCommand([first], { quiet: true }, {}, context);
+    assert.equal(out, `${BASE}/f/one.txt\n`);
+  });
+
+  it('makes the share URL a cyan link in terminals that support links', async () => {
+    const { fetch } = mockFetch(server);
+    let out = '';
+    const { context } = await createTestContext(fetch, {
+      env: { FILECAFE_TOKEN: 'env-token', FORCE_COLOR: '1', TERM_PROGRAM: 'iTerm.app' },
+      stdout: { isTTY: true, write: (chunk: string) => (out += chunk) },
+    });
+
+    await uploadCommand([await tempFile('one.txt', 'hello')], {}, {}, context);
+
+    const url = `${BASE}/f/one.txt`;
+    assert.ok(out.includes(`URL:\u001B[39m     \u001B]8;;${url}\u0007\u001B[36m${url}\u001B[39m\u001B]8;;\u0007\n`));
   });
 
   it('validates every input before uploading anything', async () => {
@@ -132,6 +184,14 @@ describe('filecafe upload', () => {
     const { context } = await createTestContext(fetch, { env: { FILECAFE_TOKEN: 't' } });
 
     await assert.rejects(uploadCommand(['x'], { collection: 'nope' }, {}, context), /Expected a collection UUID/);
+  });
+
+  it('writes expiry dates as "Month Dayth Year"', () => {
+    assert.equal(formatExpiry('2026-11-01T12:00:00Z'), 'November 1st 2026');
+    assert.equal(formatExpiry('2026-11-02T12:00:00Z'), 'November 2nd 2026');
+    assert.equal(formatExpiry('2026-11-03T12:00:00Z'), 'November 3rd 2026');
+    assert.equal(formatExpiry('2026-11-11T12:00:00Z'), 'November 11th 2026');
+    assert.equal(formatExpiry('2026-11-22T12:00:00Z'), 'November 22nd 2026');
   });
 
   it('sanitizes file names and guesses MIME types', () => {

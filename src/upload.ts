@@ -20,6 +20,8 @@ export interface CompletedUpload {
   password_protected: boolean;
   size: number;
   url: string | null;
+  /** ISO 8601; null when the file never expires. Missing from older servers. */
+  expires_at?: string | null;
 }
 
 /** An error while transferring bytes to the upload server. */

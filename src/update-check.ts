@@ -1,6 +1,6 @@
 import { join, sep } from 'node:path';
 import type { Context } from './context.ts';
-import { colorsFor } from './terminal.ts';
+import { colorsFor, styledUrl } from './terminal.ts';
 import { CHECK_INTERVAL_MS, fetchLatestVersion, readUpdateCache, updateCachePath, updateUpdateCache, type UpdateCache } from './update-cache.ts';
 import { VERSION } from './version.ts';
 
@@ -83,7 +83,7 @@ async function offerUpdate(context: Context, version: string | null): Promise<vo
   context.stderr.write(
     version
       ? `\nUpdate available for filecafe (${color.gray(`v${VERSION}`)} → ${color.green(`v${version}`)})\n` +
-          `Changelog: ${color.cyan.underline(`${RELEASES_URL}/v${version}`)}\n`
+          `Changelog: ${styledUrl(context.stderr, context.env, `${RELEASES_URL}/v${version}`)}\n`
       : '\nA newer version of filecafe may be available.\n',
   );
 

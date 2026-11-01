@@ -4,7 +4,7 @@ import { ApiError } from '../api.ts';
 import { CliError, type Context } from '../context.ts';
 import { guessMimeType } from '../mime.ts';
 import { requireSession, type GlobalOptions } from '../session.ts';
-import { colorsFor } from '../terminal.ts';
+import { colorsFor, styledUrl } from '../terminal.ts';
 import { uploadFile, type CompletedUpload } from '../upload.ts';
 
 export interface UploadCommandOptions {
@@ -24,6 +24,7 @@ export type UploadResult =
       size: number;
       url: string | null;
       password_protected: boolean;
+      expires_at?: string | null;
     }
   | { file: string; ok: false; error: string };
 
@@ -48,6 +49,40 @@ export function uploadFilename(path: string): string {
   const keep = extension.length > 0 && extension.length <= 16 ? extension : [];
 
   return characters.slice(0, MAX_FILENAME_LENGTH - keep.length).join('') + keep.join('');
+}
+
+/** "November 7th 2026", in the local time zone. */
+export function formatExpiry(iso: string): string {
+  const date = new Date(iso);
+
+  if (Number.isNaN(date.getTime())) {
+    return iso;
+  }
+
+  const day = date.getDate();
+  const suffixes: Partial<Record<Intl.LDMLPluralRule, string>> = { one: 'st', two: 'nd', few: 'rd' };
+  const suffix = suffixes[new Intl.PluralRules('en-US', { type: 'ordinal' }).select(day)] ?? 'th';
+  const month = date.toLocaleString('en-US', { month: 'long' });
+
+  return `${month} ${day}${suffix} ${date.getFullYear()}`;
+}
+
+function summary(
+  result: { filename: string; size: number; expires_at?: string | null },
+  url: string,
+  color: ReturnType<typeof colorsFor>,
+): string {
+  const lines = [
+    `${color.green('Successfully uploaded')} ${color.bold(result.filename)}`,
+    `${color.gray('URL:')}     ${url}`,
+    `${color.gray('Size:')}    ${formatBytes(result.size)}`,
+  ];
+
+  if (result.expires_at !== undefined) {
+    lines.push(`${color.gray('Expires:')} ${result.expires_at === null ? 'Never' : formatExpiry(result.expires_at)}`);
+  }
+
+  return `${lines.join('\n')}\n`;
 }
 
 export function formatBytes(bytes: number): string {
@@ -134,6 +169,10 @@ export async function uploadCommand(
   const showProgress = Boolean(context.stderr.isTTY) && !options.json && !options.quiet;
   // Share URLs on stdout are never colored, so piping or copying them stays clean.
   const err = colorsFor(context.stderr, context.env);
+  // People at a terminal get a summary per file; scripts and agents reading a pipe get bare URLs.
+  const showSummary = Boolean(context.stdout.isTTY) && !options.quiet;
+  const out = colorsFor(context.stdout, context.env);
+  let summaries = 0;
   const progress = createProgress(context, showProgress);
   const notice = (message: string) => {
     if (!options.quiet) {
@@ -207,6 +246,7 @@ export async function uploadCommand(
             size: completed.size,
             url: completed.url ?? null,
             password_protected: Boolean(completed.password_protected),
+            ...(completed.expires_at !== undefined && { expires_at: completed.expires_at }),
           };
         } catch (error) {
           result = { file, ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -223,7 +263,9 @@ export async function uploadCommand(
       results.push(result);
 
       if (!options.json) {
-        if (result.ok && result.url) {
+        if (result.ok && result.url && showSummary) {
+          context.stdout.write(`${summaries++ > 0 ? '\n' : ''}${summary(result, styledUrl(context.stdout, context.env, result.url), out)}`);
+        } else if (result.ok && result.url) {
           context.stdout.write(`${result.url}\n`);
         } else if (result.ok) {
           context.stderr.write(

@@ -14,7 +14,7 @@ import { VERSION } from './version.ts';
 const MAIN_EXAMPLES = `
 Examples:
   $ filecafe login                          # log in via your browser (one time)
-  $ filecafe upload report.pdf              # prints the share URL on stdout
+  $ filecafe upload report.pdf              # shows the share URL, size and expiry date
   $ filecafe upload a.png b.mp4 --json      # machine-readable results (for scripts and AI agents)
   $ filecafe upload ./build.zip | pbcopy    # copy the share URL to the clipboard
   $ FILECAFE_TOKEN=... npx filecafe upload notes.txt --json   # CI / headless
@@ -29,10 +29,11 @@ Exit codes: 0 on success, 1 on any failure. Errors and progress go to stderr.
 
 const UPLOAD_EXAMPLES = `
 Output:
-  Default: one share URL per line on stdout, in the order the files were given.
+  Terminal: a summary per file (share URL, size, expiry date).
+  Piped or --quiet: one share URL per line on stdout, in the order the files were given.
   --json:  a JSON array on stdout with one object per input file:
-             {"file": "a.png", "ok": true, "id": "...", "filename": "a.png",
-              "size": 1234, "url": "https://file.cafe/...", "password_protected": false}
+             {"file": "a.png", "ok": true, "id": "...", "filename": "a.png", "size": 1234,
+              "url": "https://file.cafe/...", "password_protected": false, "expires_at": "2026-11-07T12:00:00+00:00"}
              {"file": "b.png", "ok": false, "error": "No such file."}
   Exit code is 0 if every file uploaded, 1 if any failed.
 
