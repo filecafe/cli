@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { ApiError } from '../api.ts';
+import { createCollection, CollectionIncompleteError, validateCollectionName, type Collection } from '../collections.ts';
 import { CliError, type Context } from '../context.ts';
 import { guessMimeType } from '../mime.ts';
 import { requireSession, type GlobalOptions } from '../session.ts';
@@ -9,6 +10,8 @@ import { uploadFile, type CompletedUpload } from '../upload.ts';
 
 export interface UploadCommandOptions {
   collection?: string;
+  /** Name of a collection to create from the uploaded files. */
+  newCollection?: string;
   json?: boolean;
   quiet?: boolean;
   /** Parallel part uploads per file. */
@@ -65,6 +68,18 @@ export function formatExpiry(iso: string): string {
   const month = date.toLocaleString('en-US', { month: 'long' });
 
   return `${month} ${day}${suffix} ${date.getFullYear()}`;
+}
+
+export function collectionSummary(collection: Collection, url: string, color: ReturnType<typeof colorsFor>): string {
+  const files = `${collection.files_count} ${collection.files_count === 1 ? 'file' : 'files'}`;
+
+  return [
+    `${color.green('Created collection')} ${color.bold(collection.name)}`,
+    `${color.gray('URL:')}     ${url}`,
+    `${color.gray('Files:')}   ${files}`,
+    `${color.gray('ID:')}      ${collection.id}`,
+    '',
+  ].join('\n');
 }
 
 function summary(
@@ -162,6 +177,22 @@ export async function uploadCommand(
     throw new CliError(`Invalid --collection "${options.collection}". Expected a collection UUID.`);
   }
 
+  let newCollectionName: string | undefined;
+
+  if (options.newCollection !== undefined) {
+    if (options.collection !== undefined) {
+      throw new CliError('Use either --collection or --new-collection, not both.');
+    }
+
+    const checked = validateCollectionName(options.newCollection);
+
+    if ('error' in checked) {
+      throw new CliError(`Invalid --new-collection: ${checked.error}`);
+    }
+
+    newCollectionName = checked.name;
+  }
+
   if (files.length === 0) {
     throw new CliError('No files given. Usage: filecafe upload <files...>');
   }
@@ -186,6 +217,10 @@ export async function uploadCommand(
   const checked = await Promise.all(files.map(validateFile));
   const invalid = checked.filter((entry): entry is { file: string; error: string } => 'error' in entry);
   const results: UploadResult[] = [];
+  let collection: Collection | null = null;
+  let collectionError: string | null = null;
+  // With --new-collection, scripts reading a pipe get the collection's URL instead of each file's.
+  const printFileUrls = newCollectionName === undefined || showSummary;
 
   if (invalid.length > 0) {
     // Fail fast: nothing is uploaded unless every input is a readable regular file.
@@ -266,7 +301,9 @@ export async function uploadCommand(
         if (result.ok && result.url && showSummary) {
           context.stdout.write(`${summaries++ > 0 ? '\n' : ''}${summary(result, styledUrl(context.stdout, context.env, result.url), out)}`);
         } else if (result.ok && result.url) {
-          context.stdout.write(`${result.url}\n`);
+          if (printFileUrls) {
+            context.stdout.write(`${result.url}\n`);
+          }
         } else if (result.ok) {
           context.stderr.write(
             `${err.yellow(`${file}:`)} uploaded (id ${result.id}), but the server returned no share link.\n`,
@@ -278,7 +315,50 @@ export async function uploadCommand(
     }
   }
 
-  if (options.json) {
+  if (newCollectionName !== undefined && invalid.length === 0) {
+    const uploadedIds = results.flatMap((result) => (result.ok ? [result.id] : []));
+
+    if (uploadedIds.length === 0) {
+      collectionError = 'No files were uploaded, so the collection was not created.';
+    } else {
+      progress.update(`Creating collection ${err.bold(newCollectionName)}...`);
+
+      try {
+        collection = await createCollection(client, newCollectionName, uploadedIds);
+      } catch (error) {
+        if (error instanceof CollectionIncompleteError) {
+          collection = error.collection;
+        }
+
+        collectionError = error instanceof Error ? error.message : String(error);
+      } finally {
+        progress.clear();
+      }
+    }
+
+    if (!options.json) {
+      if (collection && showSummary) {
+        context.stdout.write(`${summaries > 0 ? '\n' : ''}${collectionSummary(collection, styledUrl(context.stdout, context.env, collection.url), out)}`);
+      } else if (collection) {
+        context.stdout.write(`${collection.url}\n`);
+      }
+
+      if (collectionError !== null) {
+        context.stderr.write(`${err.red('Collection:')} ${collectionError}\n`);
+      } else if (results.some((result) => !result.ok)) {
+        context.stderr.write(`${err.yellow('Collection:')} created without the files that failed to upload.\n`);
+      }
+    }
+  }
+
+  if (options.json && newCollectionName !== undefined) {
+    const output = {
+      collection,
+      ...(collectionError !== null && { collection_error: collectionError }),
+      files: results,
+    };
+    context.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+  } else if (options.json) {
     context.stdout.write(`${JSON.stringify(results, null, 2)}\n`);
   } else if (invalid.length > 0) {
     for (const entry of invalid) {
@@ -288,5 +368,5 @@ export async function uploadCommand(
     context.stderr.write(`${err.red('Nothing was uploaded.')}\n`);
   }
 
-  return results.every((result) => result.ok) ? 0 : 1;
+  return results.every((result) => result.ok) && collectionError === null ? 0 : 1;
 }
