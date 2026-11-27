@@ -26,7 +26,6 @@ const server: Handler = async (call) => {
         thumbnail: null,
         tile: null,
         preview: null,
-        token: `token-${body.filename}`,
       },
     });
   }

@@ -30,7 +30,6 @@ function singleStart(id = 'upload-1') {
       thumbnail: null,
       tile: null,
       preview: null,
-      token: `completion-token-${id}`,
     },
   });
 }
@@ -107,7 +106,8 @@ describe('single PUT upload', () => {
     assert.equal(await bodyText(put?.body), 'hello world');
 
     assert.equal(complete?.headers.authorization, 'Bearer secret-token');
-    assert.deepEqual(await bodyJson(complete?.body), { token: 'completion-token-upload-1' });
+    assert.equal(complete?.body, undefined);
+    assert.equal(complete?.headers['content-type'], undefined);
   });
 
   it('does not retry 4xx part responses and surfaces the text message', async () => {
@@ -144,7 +144,7 @@ describe('single PUT upload', () => {
     assert.equal(result.id, 'upload-1');
     assert.equal(attempts, 3);
     assert.deepEqual(waits, [1000, 2000]);
-    assert.deepEqual(await bodyJson(calls.at(-1)?.body), { token: 'completion-token-upload-1' });
+    assert.equal(calls.at(-1)?.body, undefined);
   });
 
   it('reports progress as bytes are sent and takes back the bytes of a failed attempt', async () => {
@@ -257,7 +257,7 @@ describe('single PUT upload', () => {
 });
 
 /** A multipart start for `parts` one-byte parts, whose URLs are .../start/<part number>. */
-function multipartStart(parts: number, token: string) {
+function multipartStart(parts: number) {
   return json(201, {
     data: {
       id: 'multi-3',
@@ -267,13 +267,12 @@ function multipartStart(parts: number, token: string) {
         url: `https://upload.file.cafe/multi-3/start/${i + 1}`,
         headers: { 'Content-Type': 'text/plain' },
       })),
-      token,
     },
   });
 }
 
-/** What POST /uploads/{id}/parts returns: fresh URLs (.../fresh/<n>) and a renewed ticket. */
-function partsResponse(partNumbers: number[], token: string) {
+/** What POST /uploads/{id}/parts returns: fresh URLs (.../fresh/<n>). */
+function partsResponse(partNumbers: number[]) {
   return json(200, {
     data: {
       parts: partNumbers.map((partNumber) => ({
@@ -281,7 +280,6 @@ function partsResponse(partNumbers: number[], token: string) {
         url: `https://upload.file.cafe/multi-3/fresh/${partNumber}`,
         headers: { 'Content-Type': 'text/plain' },
       })),
-      token,
       expires_at: 0,
     },
   });
@@ -309,7 +307,6 @@ describe('multipart upload', () => {
             thumbnail: null,
             tile: null,
             preview: null,
-            token: 'multi-completion-token',
           },
         });
       }
@@ -342,25 +339,27 @@ describe('multipart upload', () => {
       ['abc', 'def', 'ghi', 'j'],
     );
     assert.equal(maxInFlight, 2);
-    assert.deepEqual(await bodyJson(calls.at(-1)?.body), { token: 'multi-completion-token' });
+    assert.equal(calls.at(-1)?.method, 'PUT');
+    assert.equal(calls.at(-1)?.url, `${BASE}/api/v1/uploads/multi-1`);
+    assert.equal(calls.at(-1)?.body, undefined);
     assert.equal(progress.at(-1), contents.length);
   });
 
-  it('fetches URLs for later parts in batches of 50 and completes with the latest ticket', async () => {
+  it('fetches URLs for later parts in batches of 50 and then completes', async () => {
     const contents = 'x'.repeat(120);
     const putUrls: string[] = [];
     const batches: unknown[] = [];
 
     const { calls, options } = await setup(async (call) => {
       if (call.method === 'POST' && call.url === `${BASE}/api/v1/uploads`) {
-        return multipartStart(120, 'start-token');
+        return multipartStart(120);
       }
 
       if (call.url === `${BASE}/api/v1/uploads/multi-3/parts`) {
-        const body = (await bodyJson(call.body)) as { token: string; part_numbers: number[] };
+        const body = (await bodyJson(call.body)) as { part_numbers: number[] };
         batches.push(body);
 
-        return partsResponse(body.part_numbers, `parts-token-${batches.length}`);
+        return partsResponse(body.part_numbers);
       }
 
       if (call.url.startsWith('https://upload.file.cafe')) {
@@ -376,15 +375,16 @@ describe('multipart upload', () => {
 
     const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
     assert.deepEqual(batches, [
-      { token: 'start-token', part_numbers: range(51, 100) },
-      { token: 'parts-token-1', part_numbers: range(101, 120) },
+      { part_numbers: range(51, 100) },
+      { part_numbers: range(101, 120) },
     ]);
     assert.deepEqual(
       putUrls.filter((url) => url.includes('/start/')).map((url) => Number(url.split('/').pop())).sort((a, b) => a - b),
       range(1, 50),
     );
     assert.equal(putUrls.filter((url) => url.includes('/fresh/')).length, 70);
-    assert.deepEqual(await bodyJson(calls.at(-1)?.body), { token: 'parts-token-2' });
+    assert.equal(calls.at(-1)?.url, `${BASE}/api/v1/uploads/multi-3`);
+    assert.equal(calls.at(-1)?.body, undefined);
   });
 
   it('fetches a batch again once its URLs are an hour old', async () => {
@@ -394,14 +394,14 @@ describe('multipart upload', () => {
 
     const { options } = await setup(async (call) => {
       if (call.method === 'POST' && call.url === `${BASE}/api/v1/uploads`) {
-        return multipartStart(3, 'start-token');
+        return multipartStart(3);
       }
 
       if (call.url.endsWith('/parts')) {
         const body = (await bodyJson(call.body)) as { part_numbers: number[] };
         batches.push(body.part_numbers);
 
-        return partsResponse(body.part_numbers, 'renewed-token');
+        return partsResponse(body.part_numbers);
       }
 
       if (call.url.startsWith('https://upload.file.cafe')) {
@@ -430,11 +430,11 @@ describe('multipart upload', () => {
   it('stops when file.cafe does not return URLs for every requested part', async () => {
     const { calls, options } = await setup(async (call) => {
       if (call.method === 'POST' && call.url === `${BASE}/api/v1/uploads`) {
-        return multipartStart(60, 'start-token');
+        return multipartStart(60);
       }
 
       if (call.url.endsWith('/parts')) {
-        return json(200, { data: { parts: [], token: 'renewed-token', expires_at: 0 } });
+        return json(200, { data: { parts: [], expires_at: 0 } });
       }
 
       return stored();
@@ -453,7 +453,6 @@ describe('multipart upload', () => {
             multipart_id: 'mp-2',
             part_size: 2,
             parts: [0, 1, 2, 3, 4].map((index) => ({ url: `https://upload.file.cafe/multi-2/${index}`, headers: {} })),
-            token: 't',
           },
         });
       }
@@ -470,7 +469,7 @@ describe('multipart upload', () => {
     const { options } = await setup(
       () =>
         json(201, {
-          data: { id: 'x', multipart_id: 'mp', part_size: 3, parts: [{ url: 'https://u', headers: {} }], token: 't' },
+          data: { id: 'x', multipart_id: 'mp', part_size: 3, parts: [{ url: 'https://u', headers: {} }] },
         }),
       'abcdefghij',
     );

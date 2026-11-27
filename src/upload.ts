@@ -8,7 +8,6 @@ export interface SignedTarget {
 
 interface StartedUploadBase {
   id: string;
-  token: string;
 }
 
 export type StartedUpload = StartedUploadBase &
@@ -90,8 +89,8 @@ export function planTransfer(upload: StartedUpload, size: number): TransferPlan 
   const unexpected = (detail: string) => new ApiError(`Unexpected response when starting the upload: ${detail}.`, null);
   const data: unknown = upload;
 
-  if (!isRecord(data) || typeof data.id !== 'string' || typeof data.token !== 'string') {
-    throw unexpected('missing id or token');
+  if (!isRecord(data) || typeof data.id !== 'string') {
+    throw unexpected('missing id');
   }
 
   if ('parts' in data) {
@@ -305,7 +304,7 @@ export async function uploadFile(options: UploadOptions): Promise<CompletedUploa
   return client.request<CompletedUpload>(
     'PUT',
     `/api/v1/uploads/${encodeURIComponent(started.id)}`,
-    { token: partUrls.token() },
+    undefined,
     { idempotent: true },
   );
 }
@@ -318,15 +317,13 @@ interface PartUrlBatch {
 /**
  * The URL for each part of an upload, in batches of PART_URL_BATCH_SIZE. The first batch comes
  * from the start response; later ones, and any batch older than PART_URL_MAX_AGE_MS, are fetched
- * when a part in them is about to be uploaded. Each fetch also renews the upload ticket, so the
- * latest token is the one to complete with.
+ * when a part in them is about to be uploaded. Each fetch also renews the upload's expiry.
  */
 function createPartUrls(options: UploadOptions, started: StartedUpload, targets: SignedTarget[]) {
   const now = options.now ?? Date.now;
   const batches = new Map<number, PartUrlBatch>([
     [0, { fetchedAt: now(), targets: Promise.resolve(targets.slice(0, PART_URL_BATCH_SIZE)) }],
   ]);
-  let token = started.token;
 
   const fetchBatch = async (batch: number): Promise<SignedTarget[]> => {
     const first = batch * PART_URL_BATCH_SIZE + 1;
@@ -334,17 +331,15 @@ function createPartUrls(options: UploadOptions, started: StartedUpload, targets:
     const response = await options.client.request<unknown>(
       'POST',
       `/api/v1/uploads/${encodeURIComponent(started.id)}/parts`,
-      { token, part_numbers: partNumbers },
+      { part_numbers: partNumbers },
       { idempotent: true },
     );
     const parts = isRecord(response) && Array.isArray(response.parts) ? response.parts : [];
     const fresh = partNumbers.map((partNumber) => parts.find((part) => isRecord(part) && part.part_number === partNumber));
 
-    if (!isRecord(response) || typeof response.token !== 'string' || !fresh.every(isSignedTarget)) {
+    if (!fresh.every(isSignedTarget)) {
       throw new ApiError('Unexpected response when fetching upload URLs.', null);
     }
-
-    token = response.token;
 
     return fresh.map((part) => ({ url: part.url, headers: part.headers }));
   };
@@ -366,6 +361,5 @@ function createPartUrls(options: UploadOptions, started: StartedUpload, targets:
 
       return (await entry.targets)[index % PART_URL_BATCH_SIZE] as SignedTarget;
     },
-    token: () => token,
   };
 }

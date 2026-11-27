@@ -30,7 +30,7 @@ const server: Handler = async (call) => {
     }
 
     return json(201, {
-      data: { id: `id-${body.filename}`, url: `https://upload.file.cafe/${body.filename}`, headers: {}, token: 't' },
+      data: { id: `id-${body.filename}`, url: `https://upload.file.cafe/${body.filename}`, headers: {} },
     });
   }
 
