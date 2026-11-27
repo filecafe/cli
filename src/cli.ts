@@ -4,6 +4,7 @@ import { ApiError } from './api.ts';
 import { collectionsCommand, createCollectionCommand } from './commands/collections.ts';
 import { loginCommand } from './commands/login.ts';
 import { logoutCommand } from './commands/logout.ts';
+import { upgradeCommand } from './commands/upgrade.ts';
 import { uploadCommand } from './commands/upload.ts';
 import { whoamiCommand } from './commands/whoami.ts';
 import { CliError, createDefaultContext, type Context } from './context.ts';
@@ -22,6 +23,7 @@ Examples:
   $ filecafe collections                    # list your collections and their IDs
   $ filecafe collections create "Inbox"     # an empty collection to upload into with --collection
   $ FILECAFE_TOKEN=... npx filecafe upload notes.txt --json   # CI / headless
+  $ filecafe upgrade                        # install the latest version
 
 Environment:
   FILECAFE_TOKEN   API token; takes precedence over the saved login
@@ -182,6 +184,12 @@ export function createProgram(context: Context): Command {
     .action((name: string, options: { json?: boolean }, command: Command) =>
       execute(context, () => createCollectionCommand(name, options, globals(command), context)),
     );
+
+  program
+    .command('upgrade')
+    .description('Upgrade filecafe to the latest version with the package manager that installed it')
+    // No update notice afterwards: it would name the version just installed.
+    .action(() => execute(context, () => upgradeCommand(context), { quiet: true }));
 
   return program;
 }

@@ -19,6 +19,8 @@ npm i -g filecafe
 filecafe --help
 ```
 
+Run `filecafe upgrade` to update a global install to the latest version. It uses the package manager that installed filecafe (npm, pnpm, Yarn, or Bun).
+
 A global install also adds `cafe` as a shorter name for the same command, so `cafe upload report.pdf` works too. With npx, use `npx filecafe`: the `cafe` package on npm is unrelated.
 
 Requires Node.js 20 or newer.

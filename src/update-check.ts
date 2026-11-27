@@ -87,7 +87,7 @@ async function offerUpdate(context: Context, version: string | null): Promise<vo
       : '\nA newer version of filecafe may be available.\n',
   );
 
-  if (context.env.npm_command === 'exec' || context.scriptPath.replaceAll('\\', '/').includes('/_npx/')) {
+  if (isNpx(context)) {
     context.stderr.write(`Run: ${run('npx filecafe@latest')}\n`);
 
     return;
@@ -126,6 +126,11 @@ async function offerUpdate(context: Context, version: string | null): Promise<vo
       ? `${color.green('Updated filecafe.')}\n`
       : `${color.red('The update failed.')} Run it yourself: ${run(installer.join(' '))}\n`,
   );
+}
+
+/** Whether this copy is running through npx, so there is nothing installed to upgrade. */
+export function isNpx(context: Pick<Context, 'env' | 'scriptPath'>): boolean {
+  return context.env.npm_command === 'exec' || context.scriptPath.replaceAll('\\', '/').includes('/_npx/');
 }
 
 interface PackageManager {
