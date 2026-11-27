@@ -94,9 +94,7 @@ async function offerUpdate(context: Context, version: string | null): Promise<vo
   }
 
   if (!context.stdin.isTTY || !context.stdout.isTTY) {
-    const installer = await detectInstaller(context);
-
-    context.stderr.write(installer ? `Run: ${run(installer.join(' '))}\n` : UNKNOWN_INSTALL);
+    context.stderr.write(`Run: ${run('filecafe upgrade')}\n`);
 
     return;
   }
@@ -104,6 +102,8 @@ async function offerUpdate(context: Context, version: string | null): Promise<vo
   const question = `${color.gray('?')} ${color.bold('Would you like to upgrade now?')} ${color.gray('(Y/n)')} `;
 
   if (!(await context.confirm(question))) {
+    context.stderr.write(`Run "${run('filecafe upgrade')}" any time to update.\n`);
+
     return;
   }
 

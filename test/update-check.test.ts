@@ -122,7 +122,10 @@ describe('update check', () => {
 
     await startUpdateCheck(session.context)();
 
-    assert.equal(session.stderr(), '\nA newer version of filecafe may be available.\n');
+    assert.equal(
+      session.stderr(),
+      '\nA newer version of filecafe may be available.\nRun "filecafe upgrade" any time to update.\n',
+    );
     assert.equal(session.questions.length, 1);
   });
 
@@ -188,7 +191,7 @@ describe('update check', () => {
     assert.match(session.stderr(), /Could not tell whether npm, pnpm, Yarn, or Bun installed filecafe\./);
   });
 
-  it('prints the upgrade command without asking when output is piped', async () => {
+  it('points at filecafe upgrade without asking when output is piped', async () => {
     for (const overrides of [
       { stdout: { isTTY: false, write: () => true } },
       { stdin: { isTTY: false, async *[Symbol.asyncIterator]() {} } },
@@ -198,7 +201,8 @@ describe('update check', () => {
       await startUpdateCheck(session.context)();
 
       assert.deepEqual(session.questions, []);
-      assert.match(session.stderr(), /Run: npm i -g filecafe@latest\n$/);
+      assert.match(session.stderr(), /Run: filecafe upgrade\n$/);
+      assert.deepEqual(session.runs, []);
     }
   });
 
