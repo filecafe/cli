@@ -19,6 +19,8 @@ npm i -g filecafe
 filecafe --help
 ```
 
+A global install also adds `cafe` as a shorter name for the same command, so `cafe upload report.pdf` works too. With npx, use `npx filecafe`: the `cafe` package on npm is unrelated.
+
 Requires Node.js 20 or newer.
 
 When you run filecafe in a terminal and a new version is out, it tells you and offers to upgrade it with the package manager you installed it with. It checks npm in the background once a day (retrying on the next run if npm can't be reached), mentions an update at most every three days, and never shows this in CI or when its output is piped (scripts and AI agents). Set `FILECAFE_NO_UPDATE_CHECK=1` or `NO_UPDATE_NOTIFIER=1` to turn it off.

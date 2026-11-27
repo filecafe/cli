@@ -12,7 +12,8 @@
   "homepage": "https://file.cafe",
   "type": "module",
   "bin": {
-    "filecafe": "dist/cli.js"
+    "filecafe": "dist/cli.js",
+    "cafe": "dist/cli.js"
   },
   "files": [
     "dist"
